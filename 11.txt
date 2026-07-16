@@ -1,0 +1,21 @@
+[cli]
+installer = "internal"
+
+[ui]
+max_thoughts_width = 120
+fork_secondary_model = "grok-build"
+yolo = false
+compact_mode = false
+permission_mode = "always-approve"
+
+[models]
+default = "kimi"
+
+[model.kimi]
+model = "kimi-k2.7-code"
+base_url = "https://api.kimi.com/coding/v1"
+name = "Kimi"
+api_backend = "chat_completions"
+auth_scheme = "bearer"
+context_window = 128000
+api_key = ""
