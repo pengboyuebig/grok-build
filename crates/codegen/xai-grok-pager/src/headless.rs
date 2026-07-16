@@ -14,7 +14,9 @@ use tokio_util::sync::CancellationToken;
 
 use agent_client_protocol as acp;
 use xai_acp_lib::{AcpAgentTx, AcpClientMessageBox, acp_send};
-use xai_grok_shell::agent::auth_method::AuthMethodKind;
+use xai_grok_shell::agent::auth_method::{
+    AuthMethodKind, XAI_API_KEY_METHOD_ID, has_xai_api_key_env,
+};
 use xai_grok_shell::agent::config::Config as AgentConfig;
 use xai_grok_shell::extensions::task::{CancelSubagentRequest, KillTaskRequest};
 use xai_grok_shell::sampling::error::{RATE_LIMITED_ERROR_CODE, rate_limited_user_message};
@@ -507,14 +509,15 @@ fn auto_respond_to_permissions(
 /// "Not signed in" error message, tailored to the session type.
 fn auth_required_message(interactive: bool) -> String {
     if interactive {
-        "Not signed in. Run `grok login` to authenticate \
-         (or `grok login --device-code` if no browser is available)."
+        "Not signed in. Set the XAI_API_KEY environment variable, \
+         or run `grok login` to authenticate (use `grok login --device-auth` \
+         if no browser is available)."
             .to_string()
     } else {
-        "Not signed in. To authenticate without a browser, run:\n  \
-         grok login --device-code\n\n\
-         Alternatively, set the XAI_API_KEY environment variable \
-         or run `grok login` on a machine with a browser."
+        "Not signed in. To authenticate without a browser, set the \
+         XAI_API_KEY environment variable or run:\n  \
+         grok login --device-auth\n\n\
+         Alternatively, run `grok login` on a machine with a browser."
             .to_string()
     }
 }
@@ -530,6 +533,20 @@ async fn authenticate(
     default_auth_method_id: Option<&acp::AuthMethodId>,
 ) -> anyhow::Result<bool> {
     let method_id = crate::acp::select_eager_auth_method(auths, default_auth_method_id)
+        .or_else(|| {
+            if has_xai_api_key_env() {
+                return Some(acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID));
+            }
+            if let Some(api_key) = xai_grok_shell::auth::read_api_key(
+                &xai_grok_shell::util::grok_home::grok_home(),
+            ) {
+                unsafe {
+                    std::env::set_var("XAI_API_KEY", &api_key);
+                }
+                return Some(acp::AuthMethodId::new(XAI_API_KEY_METHOD_ID));
+            }
+            None
+        })
         .ok_or_else(|| {
             use std::io::IsTerminal;
             let interactive = std::io::stdin().is_terminal()
