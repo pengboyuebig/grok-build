@@ -1657,14 +1657,32 @@ async fn async_main() -> Result<()> {
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 return xai_grok_pager::plugin_cmd::run(plugin_args).await;
             }
-            Command::Models => {
+            Command::Models(models_cmd) => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
-                let config = xai_grok_shell::config::load_effective_config_disk_only()
-                    .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
-                let agent_config = AgentConfig::new_from_toml_cfg(&config)
-                    .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
-                return xai_grok_pager::models::list_available_models(&agent_config).await;
+                match models_cmd {
+                    xai_grok_pager::app::ModelsCommand::List => {
+                        let config = xai_grok_shell::config::load_effective_config_disk_only()
+                            .map_err(|e| anyhow::anyhow!("Failed to load config: {e}"))?;
+                        let agent_config = AgentConfig::new_from_toml_cfg(&config)
+                            .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                        return xai_grok_pager::models::list_available_models(&agent_config).await;
+                    }
+                    xai_grok_pager::app::ModelsCommand::Add {
+                        name,
+                        model,
+                        base_url,
+                        api_key,
+                        env_key,
+                        display_name,
+                        context_window,
+                    } => {
+                        return xai_grok_pager::models::add_model(
+                            name, model, base_url, api_key, env_key, display_name, context_window,
+                        )
+                        .await;
+                    }
+                }
             }
             Command::Worktree(worktree_args) => {
                 init_tracing_simple("cli");

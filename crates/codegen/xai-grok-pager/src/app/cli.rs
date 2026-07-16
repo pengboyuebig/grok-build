@@ -4,6 +4,37 @@ use clap::{ArgAction, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+
+/// Subcommands for `grok models`.
+#[derive(Debug, Clone, Subcommand)]
+pub enum ModelsCommand {
+    /// List available models and exit
+    List,
+    /// Add or update a third-party model configuration
+    Add {
+        /// Local identifier for the model (e.g. "deepseek", "kimi")
+        name: String,
+        /// Upstream model ID sent in API requests (e.g. "deepseek-chat")
+        #[arg(long)]
+        model: String,
+        /// Base URL of the model provider (e.g. "https://api.deepseek.com/v1")
+        #[arg(long)]
+        base_url: String,
+        /// API key for the provider. If omitted, use --env-key or $XAI_API_KEY.
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Environment variable name(s) that hold the provider API key.
+        #[arg(long)]
+        env_key: Option<String>,
+        /// Display name shown in the model picker.
+        #[arg(long)]
+        display_name: Option<String>,
+        /// Context window size in tokens. Defaults to 128000.
+        #[arg(long, default_value = "128000")]
+        context_window: u64,
+    },
+}
+
 /// Top-level commands for the pager binary.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
@@ -46,8 +77,9 @@ pub enum Command {
     Plugin(crate::plugin_cmd::PluginArgs),
     /// Manage cross-session memory
     Memory(crate::memory_cmd::MemoryArgs),
-    /// List available models and exit
-    Models,
+    /// Manage custom/third-party model configurations
+    #[command(subcommand)]
+    Models(ModelsCommand),
     /// List, search, or restore sessions
     Sessions(crate::sessions_cmd::SessionsArgs),
     /// Fetch and install managed configuration
