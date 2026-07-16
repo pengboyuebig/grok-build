@@ -675,8 +675,11 @@ async fn eager_auth_or_login_fallback(
         return (true, None, None, AuthStartMode::Pending, None);
     }
     if needs_login {
+        // Skip the automatic interactive login prompt at startup and land on
+        // the welcome screen. Users can still trigger login manually from the
+        // login menu when they want to authenticate.
         return (
-            needs_login,
+            false,
             login_label,
             login_method_id,
             auth_start_mode,
@@ -700,8 +703,11 @@ async fn eager_auth_or_login_fallback(
             if has_api_key {
                 return (false, login_label, login_method_id, auth_start_mode, None);
             }
-            let (label, method_id, mode) = find_interactive_login_method(auth_methods);
-            (true, label, method_id, mode, None)
+            // When no non-interactive credentials are available, skip the
+            // automatic interactive login prompt and land in the TUI directly.
+            // The user can still trigger login manually from the welcome screen
+            // if they want to authenticate later.
+            (false, login_label, login_method_id, auth_start_mode, None)
         }
     }
 }
