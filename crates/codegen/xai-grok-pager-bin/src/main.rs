@@ -1676,9 +1676,21 @@ async fn async_main() -> Result<()> {
                         env_key,
                         display_name,
                         context_window,
+                        api_backend,
+                        auth_scheme,
+                        extra_headers,
                     } => {
                         return xai_grok_pager::models::add_model(
-                            name, model, base_url, api_key, env_key, display_name, context_window,
+                            name,
+                            model,
+                            base_url,
+                            api_key,
+                            env_key,
+                            display_name,
+                            context_window,
+                            api_backend,
+                            auth_scheme,
+                            extra_headers,
                         )
                         .await;
                     }

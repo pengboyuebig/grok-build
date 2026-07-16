@@ -32,6 +32,15 @@ pub enum ModelsCommand {
         /// Context window size in tokens. Defaults to 128000.
         #[arg(long, default_value = "128000")]
         context_window: u64,
+        /// API backend/protocol to use ("chat_completions", "responses", or "messages").
+        #[arg(long, value_name = "BACKEND")]
+        api_backend: Option<String>,
+        /// Authentication scheme ("bearer" or "x_api_key"). Defaults to bearer.
+        #[arg(long, value_name = "SCHEME")]
+        auth_scheme: Option<String>,
+        /// Extra request header in "Key: Value" form (repeatable).
+        #[arg(long = "header", value_name = "KEY:VALUE")]
+        extra_headers: Vec<String>,
     },
     /// Set the default model used when grok starts without -m/--model
     Default {

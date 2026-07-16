@@ -48,6 +48,9 @@ pub async fn add_model(
     env_key: Option<String>,
     display_name: Option<String>,
     context_window: u64,
+    api_backend: Option<String>,
+    auth_scheme: Option<String>,
+    extra_headers: Vec<String>,
 ) -> Result<()> {
     let path = xai_grok_shell::util::config::user_config_path();
 
@@ -83,6 +86,20 @@ pub async fn add_model(
     }
     if let Some(env_key) = env_key {
         model_table.insert("env_key".to_string(), toml::Value::String(env_key));
+    }
+    if let Some(api_backend) = api_backend {
+        model_table.insert("api_backend".to_string(), toml::Value::String(api_backend));
+    }
+    if let Some(auth_scheme) = auth_scheme {
+        model_table.insert("auth_scheme".to_string(), toml::Value::String(auth_scheme));
+    }
+    if !extra_headers.is_empty() {
+        let mut headers = toml::map::Map::new();
+        for h in extra_headers {
+            let (k, v) = parse_header(&h).with_context(|| format!("invalid header format: {h}"))?;
+            headers.insert(k, toml::Value::String(v));
+        }
+        model_table.insert("extra_headers".to_string(), toml::Value::Table(headers));
     }
 
     let model_section = table
@@ -126,6 +143,22 @@ pub async fn add_model(
     println!("  grok models default {name}");
 
     Ok(())
+}
+
+/// Parse a header string in "Key: Value" or "Key=Value" form.
+fn parse_header(s: &str) -> Result<(String, String)> {
+    let s = s.trim();
+    let split_at = s
+        .find(':')
+        .or_else(|| s.find('='))
+        .ok_or_else(|| anyhow::anyhow!("header must be in 'Key: Value' or 'Key=Value' form"))?;
+    let (k, v) = s.split_at(split_at);
+    let k = k.trim();
+    let v = v[1..].trim_start_matches(|c| c == ':' || c == '=').trim();
+    if k.is_empty() || v.is_empty() {
+        anyhow::bail!("header key and value must be non-empty");
+    }
+    Ok((k.to_string(), v.to_string()))
 }
 
 /// Persist the default model to `[models].default` in `~/.grok/config.toml`.
