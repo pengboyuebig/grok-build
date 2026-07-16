@@ -1682,6 +1682,9 @@ async fn async_main() -> Result<()> {
                         )
                         .await;
                     }
+                    xai_grok_pager::app::ModelsCommand::Default { model } => {
+                        return xai_grok_pager::models::set_default_model(model).await;
+                    }
                 }
             }
             Command::Worktree(worktree_args) => {

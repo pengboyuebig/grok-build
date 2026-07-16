@@ -123,7 +123,64 @@ pub async fn add_model(
     println!("You can now use it with:");
     println!("  grok -m {name} \"<prompt>\"");
     println!("or set it as the default with:");
-    println!("  grok models list");
+    println!("  grok models default {name}");
 
+    Ok(())
+}
+
+/// Persist the default model to `[models].default` in `~/.grok/config.toml`.
+pub async fn set_default_model(model: String) -> Result<()> {
+    let path = xai_grok_shell::util::config::user_config_path();
+
+    // Read existing config, preserving everything we don't touch.
+    let mut root: toml::Value = match tokio::fs::read_to_string(&path).await {
+        Ok(s) => toml::from_str(&s).with_context(|| {
+            format!(
+                "failed to parse existing config at {}; fix the syntax error and retry",
+                path.display()
+            )
+        })?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            toml::Value::Table(toml::map::Map::new())
+        }
+        Err(e) => return Err(e).with_context(|| format!("failed to read {}", path.display())),
+    };
+
+    let table = root.as_table_mut().with_context(|| "config root is not a table")?;
+    let models_section = table
+        .entry("models".to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    let models_section = models_section
+        .as_table_mut()
+        .with_context(|| "[models] section in config is not a table")?;
+    models_section.insert("default".to_string(), toml::Value::String(model.clone()));
+
+    let toml_str = toml::to_string_pretty(&root).context("failed to serialize config")?;
+
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+
+    let suffix = format!(
+        "toml.tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let tmp = path.with_extension(suffix);
+    tokio::fs::write(&tmp, toml_str)
+        .await
+        .with_context(|| format!("failed to write {}", tmp.display()))?;
+    tokio::fs::rename(&tmp, &path)
+        .await
+        .with_context(|| format!("failed to rename {} to {}", tmp.display(), path.display()))?;
+
+    println!("Set default model to '{}'.", model);
+    println!();
+    println!("New sessions will use this model unless you pass -m/--model.");
     Ok(())
 }

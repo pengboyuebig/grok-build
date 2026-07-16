@@ -33,6 +33,11 @@ pub enum ModelsCommand {
         #[arg(long, default_value = "128000")]
         context_window: u64,
     },
+    /// Set the default model used when grok starts without -m/--model
+    Default {
+        /// Local model identifier (e.g. "deepseek", "kimi", or "grok-build")
+        model: String,
+    },
 }
 
 /// Top-level commands for the pager binary.
