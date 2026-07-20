@@ -1,5 +1,8 @@
-use super::persist::update_config;
+use super::mcp::user_config_path;
+use super::persist::{lock_config_writes, update_config};
 use anyhow::Result;
+use toml::Value as TomlValue;
+use toml::map::Map as TomlMap;
 
 // ---------------------------------------------------------------------------
 // Settings helpers — typed disk-write wrappers for each setting.
@@ -273,4 +276,253 @@ pub async fn set_show_tips(value: bool) -> Result<()> {
 /// Restart-required: auto-update check fires once on startup.
 pub async fn set_auto_update(value: bool) -> Result<()> {
     update_config(|cfg| cfg.cli.auto_update = Some(value)).await
+}
+
+// ---------------------------------------------------------------------------
+// Custom AI model settings — each writes to `[ui]` section.
+// ---------------------------------------------------------------------------
+
+/// Persist `[ui].custom_model_base_url` via `update_config`.
+pub async fn set_custom_model_base_url(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.custom_model_base_url = Some(value)).await
+}
+
+/// Persist `[ui].custom_model_api_key` via `update_config`.
+pub async fn set_custom_model_api_key(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.custom_model_api_key = Some(value)).await
+}
+
+/// Persist `[ui].custom_model_api_backend` via `update_config`.
+pub async fn set_custom_model_api_backend(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.custom_model_api_backend = Some(value)).await
+}
+
+/// Persist `[ui].custom_model_fetch_models` via `update_config`.
+pub async fn set_custom_model_fetch_models(value: bool) -> Result<()> {
+    update_config(|cfg| cfg.ui.custom_model_fetch_models = Some(value)).await
+}
+
+/// Persist `[ui].custom_model_selected` via `update_config`.
+pub async fn set_custom_model_selected(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.custom_model_selected = Some(value)).await
+}
+
+/// Persist a `[model.<name>]` section directly into `config.toml`.
+///
+/// Uses the process-wide write lock so this doesn't interleave with a
+/// concurrent `save_config`. Constructs the canonical TOML block:
+///
+/// ```toml
+/// [model.<name>]
+/// model = "<name>"
+/// base_url = "<base_url>"
+/// name = "<name>"
+/// api_backend = "<api_backend>"
+/// auth_scheme = "bearer"
+/// context_window = 128000
+/// api_key = "<api_key>"
+/// ```
+pub async fn save_custom_api_model(
+    name: &str,
+    base_url: &str,
+    api_key: &str,
+    api_backend: &str,
+) -> Result<()> {
+    let _guard = lock_config_writes().await;
+
+    let path = user_config_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(_) => String::new(),
+    };
+    let mut root: TomlValue = if content.is_empty() {
+        TomlValue::Table(TomlMap::new())
+    } else {
+        match toml::from_str::<TomlValue>(&content) {
+            Ok(v) => v,
+            Err(parse_err) => {
+                return Err(anyhow::anyhow!(
+                    "refusing to write [model.{name}] to unparseable {}: {}",
+                    path.display(),
+                    parse_err,
+                ));
+            }
+        }
+    };
+    if !matches!(root, TomlValue::Table(_)) {
+        root = TomlValue::Table(TomlMap::new());
+    }
+    upsert_custom_model_section(&mut root, name, base_url, api_key, api_backend);
+
+    let toml_str = toml::to_string_pretty(&root)?;
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    // Use the atomic write helper from persist.
+    super::persist::atomic_write_string(&path, &toml_str)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {}", path.display(), e))?;
+
+    Ok(())
+}
+
+/// Upsert the `[model.<name>]` section into a parsed config.toml root.
+///
+/// `[model.<name>]` is a NESTED table path: root["model"][<name>].
+/// Writing a single literal key "model.<name>" instead would serialize
+/// as `["model.<name>"]` — a quoted key that `parse_model_overrides`
+/// (which reads root["model"]) never sees, so the model would be
+/// silently missing from the catalog.
+///
+/// Also migrates legacy literal "model.<name>" keys written by an
+/// earlier buggy version of `save_custom_api_model`: each is moved into
+/// the nested `[model]` table so previously-saved models become visible.
+fn upsert_custom_model_section(
+    root: &mut TomlValue,
+    name: &str,
+    base_url: &str,
+    api_key: &str,
+    api_backend: &str,
+) {
+    let table = root.as_table_mut().expect("root must be a table");
+
+    // Migrate legacy literal "model.<name>" keys.
+    let legacy: Vec<(String, TomlValue)> = table
+        .iter()
+        .filter(|(k, v)| k.starts_with("model.") && v.is_table())
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    for (k, v) in legacy {
+        table.remove(&k);
+        let suffix = &k["model.".len()..];
+        if suffix.is_empty() {
+            continue;
+        }
+        let model_section = table
+            .entry("model".to_string())
+            .or_insert_with(|| TomlValue::Table(TomlMap::new()));
+        if let TomlValue::Table(model_table) = model_section {
+            model_table.entry(suffix.to_string()).or_insert(v);
+        }
+    }
+
+    let model_section = table
+        .entry("model".to_string())
+        .or_insert_with(|| TomlValue::Table(TomlMap::new()));
+    // If the existing value is not a table (e.g. a scalar), replace it.
+    if !matches!(model_section, TomlValue::Table(_)) {
+        *model_section = TomlValue::Table(TomlMap::new());
+    }
+    let model_table = model_section.as_table_mut().expect("model must be a table");
+
+    let section = model_table
+        .entry(name.to_string())
+        .or_insert_with(|| TomlValue::Table(TomlMap::new()));
+    // If the existing value is not a table (e.g. a scalar), replace it.
+    if !matches!(section, TomlValue::Table(_)) {
+        *section = TomlValue::Table(TomlMap::new());
+    }
+    if let TomlValue::Table(section_table) = section {
+        section_table.insert("model".to_string(), TomlValue::String(name.to_string()));
+        section_table.insert(
+            "base_url".to_string(),
+            TomlValue::String(base_url.to_string()),
+        );
+        section_table.insert("name".to_string(), TomlValue::String(name.to_string()));
+        section_table.insert(
+            "api_backend".to_string(),
+            TomlValue::String(api_backend.to_string()),
+        );
+        section_table.insert(
+            "auth_scheme".to_string(),
+            TomlValue::String("bearer".to_string()),
+        );
+        section_table.insert(
+            "context_window".to_string(),
+            TomlValue::Integer(128_000),
+        );
+        section_table.insert("api_key".to_string(), TomlValue::String(api_key.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upsert_writes_nested_model_table() {
+        let mut root = TomlValue::Table(TomlMap::new());
+        upsert_custom_model_section(
+            &mut root,
+            "my-model",
+            "https://api.example.com/v1",
+            "sk-test",
+            "openai",
+        );
+
+        // The catalog reader looks up root["model"][<name>] — the entry
+        // must be nested, not a literal dotted key.
+        let entry = root
+            .get("model")
+            .and_then(|m| m.get("my-model"))
+            .expect("nested [model.my-model] section");
+        assert_eq!(
+            entry.get("base_url").and_then(|v| v.as_str()),
+            Some("https://api.example.com/v1")
+        );
+        assert_eq!(
+            entry.get("api_key").and_then(|v| v.as_str()),
+            Some("sk-test")
+        );
+        assert!(
+            root.get("model.my-model").is_none(),
+            "must not write a literal dotted key"
+        );
+
+        // Round-trip: the serialized form must parse back to the same
+        // nested shape (guards the actual on-disk representation).
+        let serialized = toml::to_string_pretty(&root).expect("serialize");
+        let reparsed: TomlValue = toml::from_str(&serialized).expect("reparse");
+        assert!(
+            reparsed
+                .get("model")
+                .and_then(|m| m.get("my-model"))
+                .is_some(),
+            "serialized form must contain [model.my-model], got:\n{serialized}"
+        );
+    }
+
+    #[test]
+    fn upsert_migrates_legacy_dotted_key() {
+        // Simulate a config written by the buggy version: a literal
+        // "model.old-model" table at the root.
+        let mut legacy_inner = TomlMap::new();
+        legacy_inner.insert(
+            "base_url".to_string(),
+            TomlValue::String("https://legacy.example.com".to_string()),
+        );
+        let mut root_table = TomlMap::new();
+        root_table.insert(
+            "model.old-model".to_string(),
+            TomlValue::Table(legacy_inner),
+        );
+        let mut root = TomlValue::Table(root_table);
+
+        upsert_custom_model_section(&mut root, "new-model", "https://new", "k", "openai");
+
+        assert!(root.get("model.old-model").is_none(), "legacy key removed");
+        let migrated = root
+            .get("model")
+            .and_then(|m| m.get("old-model"))
+            .expect("legacy entry migrated into [model]");
+        assert_eq!(
+            migrated.get("base_url").and_then(|v| v.as_str()),
+            Some("https://legacy.example.com")
+        );
+        assert!(
+            root.get("model")
+                .and_then(|m| m.get("new-model"))
+                .is_some(),
+            "new entry present alongside migrated one"
+        );
+    }
 }

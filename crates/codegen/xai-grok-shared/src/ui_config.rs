@@ -161,6 +161,26 @@ pub struct UiConfig {
     /// `None` inherits remote/default; skipped when untouched.
     #[serde(default, skip_serializing_if = "DisplayRefreshSettings::is_default")]
     pub display_refresh: DisplayRefreshSettings,
+
+    // ---- Custom AI model settings ----------------------------------------
+    /// Base URL for custom API endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_model_base_url: Option<String>,
+    /// API key for custom API endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_model_api_key: Option<String>,
+    /// API backend type (`openai` | `anthropic` | `azure` | `google` | `groq` | `custom`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_model_api_backend: Option<String>,
+    /// Whether the user has triggered a model fetch for the custom API.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_model_fetch_models: Option<bool>,
+    /// The selected model name from the custom API catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_model_selected: Option<String>,
+    /// Cached model names from the custom API endpoint (read at snapshot time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_api_models: Option<Vec<String>>,
 }
 
 /// User-config opt-outs for the per-tip contextual hints, serialized as
@@ -264,6 +284,12 @@ impl Default for UiConfig {
             double_click_action: None,
             contextual_hints: ContextualHints::default(),
             display_refresh: DisplayRefreshSettings::default(),
+            custom_model_base_url: None,
+            custom_model_api_key: None,
+            custom_model_api_backend: None,
+            custom_model_fetch_models: None,
+            custom_model_selected: None,
+            custom_api_models: None,
         }
     }
 }

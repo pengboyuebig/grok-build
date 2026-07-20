@@ -3,7 +3,10 @@
 use super::setters::{
     pr13_effective_default, set_ask_user_question_timeout_enabled_inner, set_auto_dark_theme_inner,
     set_auto_light_theme_inner, set_auto_update_inner, set_collapsed_edit_blocks_inner,
-    set_compact_mode, set_compact_mode_inner, set_contextual_hint_inner, set_default_model_inner,
+    set_compact_mode, set_compact_mode_inner, set_contextual_hint_inner,
+    set_custom_model_api_backend_inner, set_custom_model_api_key_inner,
+    set_custom_model_base_url_inner, set_custom_model_fetch_models_inner,
+    set_custom_model_selected_inner, set_default_model_inner,
     set_default_selected_permission_inner, set_display_refresh_auto_cadence_inner,
     set_fork_secondary_model_inner, set_group_tool_verbs_inner, set_hunk_tracker_mode_inner,
     set_invert_scroll_inner, set_keep_text_selection_inner, set_max_thoughts_width_inner,
@@ -52,6 +55,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
+    let custom_api_models_from_app = app.current_ui.custom_api_models.clone();
     for agent in app.agents.values_mut() {
         // Walk both `Settings` and `ResetSettingsConfirm` — the
         // confirm dialog embeds settings state that must stay fresh
@@ -88,6 +92,7 @@ pub(crate) fn refresh_open_settings_modals(app: &mut AppView) {
                 auto_mode_gate: auto_mode_gate_from_app,
                 ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
                 voice_stt_language: voice_stt_language_from_app.clone(),
+                custom_api_models: custom_api_models_from_app.clone().unwrap_or_default(),
             };
         }
     }
@@ -158,6 +163,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(app: &mut AppView) -> Vec
     let auto_mode_gate_from_app = app.auto_mode_gate;
     let ask_user_question_timeout_enabled_from_app = app.ask_user_question_timeout_enabled;
     let voice_stt_language_from_app = app.voice_config.language.clone();
+    let custom_api_models_from_app = app.current_ui.custom_api_models.clone();
 
     let Some(agent) = app.agents.get_mut(&id) else {
         return vec![];
@@ -201,6 +207,7 @@ pub(in crate::app::dispatch) fn dispatch_open_settings(app: &mut AppView) -> Vec
         auto_mode_gate: auto_mode_gate_from_app,
         ask_user_question_timeout_enabled: ask_user_question_timeout_enabled_from_app,
         voice_stt_language: voice_stt_language_from_app,
+        custom_api_models: custom_api_models_from_app.unwrap_or_default(),
     };
     let state = Box::new(SettingsModalState::new(
         registry,
@@ -671,6 +678,7 @@ pub(crate) fn build_pager_snapshot(app: &AppView) -> crate::settings::PagerLocal
         auto_mode_gate: app.auto_mode_gate,
         ask_user_question_timeout_enabled: app.ask_user_question_timeout_enabled,
         voice_stt_language: app.voice_config.language.clone(),
+        custom_api_models: app.current_ui.custom_api_models.clone().unwrap_or_default(),
     }
 }
 
@@ -842,6 +850,21 @@ pub(in crate::app::dispatch) fn action_for_reset(
                 );
                 None
             }
+        }
+        ("custom_model_base_url", SettingValue::String(_)) => {
+            Some(Action::SetCustomModelBaseUrl(String::new()))
+        }
+        ("custom_model_api_key", SettingValue::String(_)) => {
+            Some(Action::SetCustomModelApiKey(String::new()))
+        }
+        ("custom_model_api_backend", SettingValue::Enum(s)) => {
+            Some(Action::SetCustomModelApiBackend((*s).to_string()))
+        }
+        ("custom_model_fetch_models", SettingValue::Bool(b)) => {
+            Some(Action::SetCustomModelFetchModels(*b))
+        }
+        ("custom_model_selected", SettingValue::String(_)) => {
+            Some(Action::SetCustomModelSelected(String::new()))
         }
 
         _ => None,
@@ -1108,6 +1131,25 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
                 s.clone()
             };
             set_fork_secondary_model_inner(app, restored);
+        }
+        // custom_model_base_url / custom_model_api_key: String rollback.
+        ("custom_model_base_url", SettingValue::String(s)) => {
+            set_custom_model_base_url_inner(app, s.clone());
+        }
+        ("custom_model_api_key", SettingValue::String(s)) => {
+            set_custom_model_api_key_inner(app, s.clone());
+        }
+        // custom_model_api_backend: Enum rollback.
+        ("custom_model_api_backend", SettingValue::Enum(s)) => {
+            set_custom_model_api_backend_inner(app, s.to_string());
+        }
+        // custom_model_fetch_models: Bool rollback.
+        ("custom_model_fetch_models", SettingValue::Bool(b)) => {
+            set_custom_model_fetch_models_inner(app, *b);
+        }
+        // custom_model_selected: String rollback.
+        ("custom_model_selected", SettingValue::String(s)) => {
+            set_custom_model_selected_inner(app, s.clone());
         }
 
         _ => {

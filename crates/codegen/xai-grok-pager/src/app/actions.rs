@@ -552,6 +552,28 @@ pub enum Action {
     /// Commit `[ui.display_refresh].auto_cadence_enabled`. Restart-required —
     /// cadence is pinned once at startup.
     SetDisplayRefreshAutoCadence(bool),
+    /// Commit the custom model base URL. Persisted to `[ui].custom_model_base_url`.
+    SetCustomModelBaseUrl(String),
+    /// Commit the custom model API key. Persisted to `[ui].custom_model_api_key`.
+    SetCustomModelApiKey(String),
+    /// Commit the custom model API backend (openai/anthropic/azure/google/groq/custom).
+    /// Persisted to `[ui].custom_model_api_backend`.
+    SetCustomModelApiBackend(String),
+    /// Toggle fetching models from the custom API endpoint.
+    /// Persisted to `[ui].custom_model_fetch_models`.
+    SetCustomModelFetchModels(bool),
+    /// Commit the selected custom model name. Persisted to `[ui].custom_model_selected`.
+    SetCustomModelSelected(String),
+    /// Save the complete custom API configuration from the form.
+    /// Persists all 5 fields atomically when the user presses Save
+    /// in the EditingCustomApiForm mode.
+    SaveCustomApiConfig {
+        base_url: String,
+        api_key: String,
+        api_backend: String,
+        fetch_models: bool,
+        model: String,
+    },
     /// Preview a theme without persisting — updates the live display
     /// only. Used by the picker on Up/Down and Esc (revert).
     PreviewTheme(String),
@@ -1545,6 +1567,16 @@ pub enum Effect {
         value: crate::settings::SettingValue,
         rollback_value: crate::settings::SettingValue,
     },
+    /// Tell the shell (agent) to re-read `config.toml` and reload its model
+    /// catalog from `[model.*]` sections. The shell will broadcast an
+    /// `x.ai/models/update` notification back to connected clients,
+    /// including the pager, so the model picker and `/model` command
+    /// reflect the new/updated custom models immediately.
+    ///
+    /// This is used after saving a custom API model config to avoid
+    /// waiting for the OS file watcher, which may be unreliable (e.g.
+    /// Windows `ReadDirectoryChanges` latency) or deferred.
+    ReloadModelsFromConfig,
     /// Send structured prompt blocks to the agent.
     /// Used for skill injection where the prompt consists of
     /// multiple content blocks (metadata + skill body).
@@ -2688,6 +2720,12 @@ pub enum TaskResult {
     },
     /// Shared prompt-image preview state was resolved off-thread.
     PromptImagePreviewPrepared,
+    /// The `x.ai/internal/reload_models` ACP request completed
+    /// (fire-and-forget; no dispatch handler needed).
+    ReloadModelsComplete,
+    /// A completion of unknown / dropped significance — no dispatch
+    /// arm consumes it.
+    Nop,
 }
 #[cfg(test)]
 mod tests {

@@ -125,6 +125,16 @@ pub enum SettingsModalMode {
         key: SettingKey,
         child_idx: usize,
     },
+    /// Custom AI Model Config sub-sheet: multi-field form for configuring
+    /// a custom AI model provider. Renders base_url (String), api_key
+    /// (String, masked), api_backend (Enum), fetch_models (Bool), and
+    /// model (DynamicEnum). `child_idx` is the focused field. Esc returns
+    /// to Browse; Enter on Enum/DynamicEnum opens a secondary picker with
+    /// `previous_mode` restoring back to this sheet.
+    PickingCustomModelConfig {
+        key: SettingKey,
+        child_idx: usize,
+    },
     /// Inline string/int editor. `cursor_byte` is always on a char
     /// boundary. `validation_error` shows live feedback; commit
     /// re-validates before dispatching. No `original_value` — these
@@ -135,6 +145,28 @@ pub enum SettingsModalMode {
         cursor_byte: usize,
         validation_error: Option<String>,
     },
+    /// Custom AI API config form: all 5 fields displayed as a form
+    /// with a Save button. Enter toggles field focus; when Save is
+    /// focused, Enter dispatches SaveCustomApiConfig.
+    EditingCustomApiForm {
+        key: SettingKey,
+        /// Which field (0-4) or Save button (5) is focused.
+        field_focus: usize,
+        /// Live buffers for each editable field:
+        ///   0: base_url (String)
+        ///   1: api_key (String, masked)
+        ///   2: api_backend (index into choices)
+        ///   3: fetch_models (bool)
+        ///   4: model (String, selected model name)
+        buffers: [EditingCustomApiBuffer; 5],
+    },
+}
+
+/// Per-field buffer for the Custom API Config form.
+#[derive(Debug, Clone)]
+pub struct EditingCustomApiBuffer {
+    pub value: String,
+    pub cursor_byte: usize,
 }
 
 /// Settings modal state. Boxed inside `ActiveModal::Settings` to
@@ -152,6 +184,11 @@ pub struct SettingsModalState {
     /// Vertical scroll offset (line-granular).
     pub scroll_offset: usize,
     pub mode: SettingsModalMode,
+    /// When a sub-sheet opens a secondary picker (e.g. PickingCustomModelConfig
+    /// opening PickingEnum for the backend choice), this stores the mode to
+    /// return to after the inner picker closes. Read by `transition_to_browse()`
+    /// — if set, transitions to the stored mode instead of Browse.
+    pub previous_mode: Option<Box<SettingsModalMode>>,
     /// Filter query. Persists across FilterFocused→Browse on Enter; cleared by Esc.
     pub query: String,
     /// Byte offset of the editing cursor within `query`.
@@ -172,6 +209,11 @@ pub struct SettingsModalState {
     /// Click-hit rect per choice in `PickingEnum`. Each rect spans the
     /// full height of a choice (including wrapped description lines).
     pub picker_choice_rects: Vec<Rect>,
+    /// Click-hit rects for the `EditingCustomApiForm` sub-sheet:
+    /// indices 0-4 are the field rows (parallel to the form's
+    /// `buffers`), index 5 is the Save button. Populated by
+    /// `render_editing_custom_api_form`; cleared by `reset_hit_rects`.
+    pub custom_form_rects: Vec<Rect>,
     /// Hit-rect for the breadcrumb title in sub-pane modes
     /// (`PickingEnum`/`EditingValue`). Clicking anywhere on
     /// `Settings › <label>` cancels back to Browse. `None` in
@@ -219,10 +261,12 @@ impl SettingsModalState {
             value_hit_rects: Vec::new(),
             editor_adornment_rects: (Rect::default(), Rect::default()),
             picker_choice_rects: Vec::new(),
+            custom_form_rects: Vec::new(),
             settings_breadcrumb_rect: None,
             breadcrumb_hovered: false,
             expanded_keys: std::collections::HashSet::new(),
             hover_row: None,
+            previous_mode: None,
         }
     }
 
@@ -338,14 +382,20 @@ impl SettingsModalState {
         self.value_hit_rects.clear();
         self.editor_adornment_rects = (Rect::default(), Rect::default());
         self.picker_choice_rects.clear();
+        self.custom_form_rects.clear();
         self.settings_breadcrumb_rect = None;
         self.breadcrumb_hovered = false;
     }
 
-    /// Transition to Browse, clearing sub-pane hover/breadcrumb state
-    /// to prevent stale hit-rects across mode changes.
+    /// Transition to Browse (or restore `previous_mode` if set), clearing
+    /// sub-pane hover/breadcrumb state to prevent stale hit-rects across
+    /// mode changes.
     pub(crate) fn transition_to_browse(&mut self) {
-        self.mode = SettingsModalMode::Browse;
+        if let Some(prev) = self.previous_mode.take() {
+            self.mode = *prev;
+        } else {
+            self.mode = SettingsModalMode::Browse;
+        }
         self.hover_row = None;
         self.settings_breadcrumb_rect = None;
         self.breadcrumb_hovered = false;
@@ -466,17 +516,66 @@ impl SettingsModalState {
         true
     }
 
-    /// Transition to `PickingGroup` if the focused row is a `Group`. Returns
-    /// `false` for any other kind so the caller can fall through to the
-    /// enum/editor entry points.
+    /// Transition to `PickingGroup` (or `PickingCustomModelConfig` for mixed
+    /// groups) if the focused row is a `Group`. Returns `false` for any other
+    /// kind so the caller can fall through to the enum/editor entry points.
+    ///
+    /// A group whose children are all Bool toggles uses `PickingGroup`.
+    /// A group with mixed types (string, enum, bool, dynamic-enum) uses
+    /// `PickingCustomModelConfig`.
     pub fn try_enter_picking_group(&mut self) -> bool {
         let Some((key, meta)) = self.focused_setting() else {
             return false;
         };
-        if !matches!(meta.kind, SettingKind::Group { .. }) {
+        let SettingKind::Group { children } = &meta.kind else {
             return false;
+        };
+        // Check if all children are Bool — if so, use the simple toggle sheet.
+        let all_bool = children.iter().all(|child_key| {
+            self.registry
+                .find(child_key)
+                .map(|m| matches!(m.kind, SettingKind::Bool { .. }))
+                .unwrap_or(false)
+        });
+        if all_bool {
+            self.mode = SettingsModalMode::PickingGroup { key, child_idx: 0 };
+        } else if key == "custom_model_config" {
+            // Custom AI Model Config gets the full form with Save button.
+            // Pre-populate buffers from current values.
+            let child_keys: &[&str] = &[
+                "custom_model_base_url",
+                "custom_model_api_key",
+                "custom_model_api_backend",
+                "custom_model_fetch_models",
+                "custom_model_selected",
+            ];
+            let mut buffers = [
+                EditingCustomApiBuffer { value: String::new(), cursor_byte: 0 },
+                EditingCustomApiBuffer { value: String::new(), cursor_byte: 0 },
+                EditingCustomApiBuffer { value: String::new(), cursor_byte: 0 },
+                EditingCustomApiBuffer { value: String::new(), cursor_byte: 0 },
+                EditingCustomApiBuffer { value: String::new(), cursor_byte: 0 },
+            ];
+            for (i, &ck) in child_keys.iter().enumerate() {
+                if let Some(val) = self.value_for(ck) {
+                    let s = value_to_form_string(&val);
+                    buffers[i] = EditingCustomApiBuffer {
+                        value: s.clone(),
+                        cursor_byte: s.len(),
+                    };
+                }
+            }
+            self.mode = SettingsModalMode::EditingCustomApiForm {
+                key,
+                field_focus: 0,
+                buffers,
+            };
+        } else {
+            self.mode = SettingsModalMode::PickingCustomModelConfig {
+                key,
+                child_idx: 0,
+            };
         }
-        self.mode = SettingsModalMode::PickingGroup { key, child_idx: 0 };
         self.hover_row = None;
         true
     }
@@ -665,6 +764,7 @@ fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "show_tips" => Some(Action::SetShowTips(new)),
         "auto_update" => Some(Action::SetAutoUpdate(new)),
         "display_refresh_auto_cadence" => Some(Action::SetDisplayRefreshAutoCadence(new)),
+        "custom_model_fetch_models" => Some(Action::SetCustomModelFetchModels(new)),
         _ => None,
     }
 }
@@ -684,6 +784,7 @@ fn action_for_enum(key: SettingKey, choice: &'static str) -> Option<Action> {
         "render_mermaid" => None,
         "keep_text_selection" => None,
         "scroll_mode" => None,
+        "custom_model_api_backend" => None,
         _ => None,
     }
 }
@@ -740,6 +841,7 @@ fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> Option<Actio
         "default_selected_permission" => {
             Some(Action::SetDefaultSelectedPermission(choice.to_string()))
         }
+        "custom_model_api_backend" => Some(Action::SetCustomModelApiBackend(choice.to_string())),
         _ => None,
     }
 }
@@ -771,6 +873,9 @@ fn action_for_string(
                     .map(Action::SetForkSecondaryModel)
             }
         }
+        "custom_model_base_url" => Some(Action::SetCustomModelBaseUrl(value)),
+        "custom_model_api_key" => Some(Action::SetCustomModelApiKey(value)),
+        "custom_model_selected" => Some(Action::SetCustomModelSelected(value)),
 
         _ => {
             let _ = value;
@@ -901,7 +1006,9 @@ pub fn render_settings_modal(
                     MODAL_TITLE
                 }
             }
-            SettingsModalMode::PickingGroup { key, .. } => {
+            SettingsModalMode::PickingGroup { key, .. }
+            | SettingsModalMode::PickingCustomModelConfig { key, .. }
+            | SettingsModalMode::EditingCustomApiForm { key, .. } => {
                 if let Some(meta) = state.registry.find(key) {
                     breadcrumb_owned =
                         format!("{MODAL_TITLE} {} {}", crate::glyphs::chevron(), meta.label);
@@ -995,7 +1102,9 @@ pub fn render_settings_modal(
         state.mode,
         SettingsModalMode::PickingEnum { .. }
             | SettingsModalMode::PickingGroup { .. }
+            | SettingsModalMode::PickingCustomModelConfig { .. }
             | SettingsModalMode::EditingValue { .. }
+            | SettingsModalMode::EditingCustomApiForm { .. }
     );
     match state.mode {
         SettingsModalMode::PickingEnum { .. } => {
@@ -1012,9 +1121,20 @@ pub fn render_settings_modal(
             state.reset_hit_rects();
             render_editing_value(buf, inner_area, state, &theme);
         }
+        SettingsModalMode::PickingCustomModelConfig { .. } => {
+            state.reset_hit_rects();
+            let rects = render_picking_custom_model_config(buf, inner_area, state, &theme);
+            state.picker_choice_rects = rects;
+        }
+        SettingsModalMode::EditingCustomApiForm { .. } => {
+            state.reset_hit_rects();
+            state.custom_form_rects =
+                render_editing_custom_api_form(buf, inner_area, state, &theme);
+        }
         SettingsModalMode::Browse | SettingsModalMode::FilterFocused => {
             // Clear sub-pane hit-rects from prior frames.
             state.picker_choice_rects.clear();
+            state.custom_form_rects.clear();
             state.editor_adornment_rects = (Rect::default(), Rect::default());
             state.settings_breadcrumb_rect = None;
             state.list_area = inner_area;
@@ -2222,6 +2342,312 @@ fn render_picking_group(
         }
         y = y.saturating_add(1);
     }
+    rects
+}
+
+/// Render the Custom AI Model Config sub-sheet: title + description + one row
+/// per child field. Each field shows its label and current value; the focused
+/// field is highlighted. Differs from `render_picking_group` because children
+/// have heterogeneous types (String, Enum, Bool, DynamicEnum) and only focused
+/// rows are actionable (Enter opens the appropriate sub-picker). Returns the
+/// per-child hit-rects (parallel to the group's children) for mouse routing.
+fn render_picking_custom_model_config(
+    buf: &mut Buffer,
+    area: Rect,
+    state: &SettingsModalState,
+    theme: &Theme,
+) -> Vec<Rect> {
+    let (group_key, child_idx) = match &state.mode {
+        SettingsModalMode::PickingCustomModelConfig { key, child_idx } => (*key, *child_idx),
+        _ => return Vec::new(),
+    };
+    let Some(group_meta) = state.registry.find(group_key) else {
+        return Vec::new();
+    };
+    let children = group_children(state, group_key);
+    if area.width == 0 || area.height == 0 {
+        return Vec::new();
+    }
+
+    // Chooser shape: title + gap (2) before the description renders.
+    let header_rows = render_sub_pane_header(
+        buf,
+        area,
+        theme,
+        group_meta.label,
+        group_meta.description,
+        2,
+    );
+    if area.height <= header_rows {
+        return Vec::new();
+    }
+    let mut y = area.y + header_rows;
+    let area_end = area.y + area.height;
+
+    // ── Child field rows. ─────────────────────────────────────────
+    let mut rects: Vec<Rect> = vec![Rect::default(); children.len()];
+    for (i, child_key) in children.iter().enumerate() {
+        if y >= area_end {
+            break;
+        }
+        let Some(child_meta) = state.registry.find(child_key) else {
+            continue;
+        };
+        let is_focused = i == child_idx;
+        let is_hovered = !is_focused && state.hover_row == Some(i);
+        let bg = if is_focused {
+            theme.bg_visual
+        } else if is_hovered {
+            theme.bg_hover
+        } else {
+            theme.bg_base
+        };
+        let row_rect = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        buf.set_style(row_rect, Style::default().bg(bg));
+        rects[i] = row_rect;
+
+        let marker = if is_focused {
+            crate::glyphs::filled_dot()
+        } else {
+            "\u{25CB}"
+        };
+        let marker_style = if is_focused {
+            Style::default().fg(theme.accent_user).bg(bg)
+        } else {
+            Style::default().fg(theme.gray).bg(bg)
+        };
+        let label_style = if is_focused {
+            Style::default()
+                .fg(theme.text_primary)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text_primary).bg(bg)
+        };
+
+        // Read the current value from snapshot.
+        let value_display = match state.value_for(child_key) {
+            Some(SettingValue::String(s)) if s.is_empty() => {
+                if matches!(child_meta.kind, SettingKind::DynamicEnum { .. }) {
+                    "(no override)".to_string()
+                } else {
+                    String::new()
+                }
+            }
+            Some(SettingValue::String(s)) => {
+                // Mask API key values.
+                if child_key == &"custom_model_api_key" && !s.is_empty() {
+                    format!("{}", "\u{2022}".repeat(s.len().min(20)))
+                } else {
+                    s.clone()
+                }
+            }
+            Some(SettingValue::Enum(e)) => display_for_enum_canonical(&child_meta.kind, e).to_string(),
+            Some(SettingValue::Bool(true)) => "on".to_string(),
+            Some(SettingValue::Bool(false)) => "off".to_string(),
+            _ => String::new(),
+        };
+        let is_text_field = matches!(child_meta.kind, SettingKind::String { .. });
+        let is_enum_field = matches!(
+            child_meta.kind,
+            SettingKind::Enum { .. } | SettingKind::DynamicEnum { .. }
+        );
+        let is_bool_field = matches!(child_meta.kind, SettingKind::Bool { .. });
+        let hint = if is_text_field {
+            " Enter edit "
+        } else if is_enum_field {
+            " Enter pick "
+        } else if is_bool_field {
+            " Space toggle "
+        } else {
+            ""
+        };
+
+        // " <marker>  <label> <hint> … <value> "
+        let marker_x = area.x;
+        buf.set_span(marker_x, y, &Span::styled(marker, marker_style), PICKER_MARKER_W.min(area.width.saturating_sub(marker_x)));
+        let label_x = area.x.saturating_add(PICKER_PREFIX_W);
+        let hint_w = hint.width() as u16;
+        let value_w = value_display.width() as u16;
+        let value_x = (area.x + area.width)
+            .saturating_sub(value_w + 1)
+            .max(label_x + hint_w + 1);
+        if value_x > label_x {
+            let label_room = (value_x - label_x).saturating_sub(1) as usize;
+            let label_text: std::borrow::Cow<'_, str> = if child_meta.label.width() <= label_room {
+                std::borrow::Cow::Borrowed(child_meta.label)
+            } else {
+                std::borrow::Cow::Owned(truncate_str(child_meta.label, label_room))
+            };
+            let label_w = (label_text.width() as u16).min((value_x - label_x).saturating_sub(1));
+            buf.set_span(label_x, y, &Span::styled(label_text.as_ref(), label_style), label_w);
+        }
+        // Render hint text between label and value when focused.
+        if is_focused && hint_w > 0 && value_x > label_x + hint_w + 1 {
+            let hint_x = value_x.saturating_sub(hint_w + 1);
+            let hint_style = Style::default().fg(theme.gray_dim).bg(bg);
+            buf.set_span(hint_x, y, &Span::styled(hint, hint_style), hint_w);
+        }
+        if value_x + value_w <= area.x + area.width {
+            let value_style = if matches!(state.value_for(child_key), Some(SettingValue::Bool(true))) {
+                Style::default().fg(theme.accent_user).bg(bg)
+            } else {
+                Style::default().fg(theme.text_secondary).bg(bg)
+            };
+            buf.set_span(value_x, y, &Span::styled(value_display.as_str(), value_style), value_w);
+        }
+        y = y.saturating_add(1);
+    }
+    rects
+}
+
+/// Render the Custom API Config form with all 5 fields and a Save button.
+/// Navigation is via Tab/Shift-Tab (or Up/Down). Enter on a String field
+/// opens the inline editor; Enter on the Save button dispatches the action.
+/// Returns the click hit-rects: indices 0-4 are the field rows (parallel
+/// to the form's `buffers`), index 5 is the Save button.
+fn render_editing_custom_api_form(
+    buf: &mut Buffer,
+    area: Rect,
+    state: &SettingsModalState,
+    theme: &Theme,
+) -> Vec<Rect> {
+    let (group_key, field_focus, buffers) = match &state.mode {
+        SettingsModalMode::EditingCustomApiForm {
+            key,
+            field_focus,
+            buffers,
+        } => (*key, *field_focus, buffers),
+        _ => return Vec::new(),
+    };
+    let Some(group_meta) = state.registry.find(group_key) else {
+        return Vec::new();
+    };
+    if area.width == 0 || area.height == 0 {
+        return Vec::new();
+    }
+
+    let child_keys: &[&str] = &[
+        "custom_model_base_url",
+        "custom_model_api_key",
+        "custom_model_api_backend",
+        "custom_model_fetch_models",
+        "custom_model_selected",
+    ];
+    let child_labels: &[&str] = &[
+        "Base URL",
+        "API Key",
+        "API Backend",
+        "Fetch Models",
+        "Model",
+    ];
+
+    // Header: title + description
+    let header_rows = render_sub_pane_header(
+        buf,
+        area,
+        theme,
+        group_meta.label,
+        group_meta.description,
+        2,
+    );
+    if area.height <= header_rows {
+        return Vec::new();
+    }
+    let mut y = area.y + header_rows;
+    let area_end = area.y + area.height;
+
+    // ── Field rows. ───────────────────────────────────────────────
+    let input_w = (area.width as usize).saturating_sub(3).min(60) as u16;
+    // Hit-rects: 0-4 field rows, 5 = Save button (default = not rendered).
+    let mut rects: Vec<Rect> = vec![Rect::default(); 6];
+
+    for (i, (&child_key, &label)) in child_keys.iter().zip(child_labels.iter()).enumerate() {
+        if y >= area_end {
+            break;
+        }
+        let is_focused = i == field_focus;
+        let bg = if is_focused {
+            theme.bg_visual
+        } else {
+            theme.bg_base
+        };
+        let row_rect = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: 1,
+        };
+        rects[i] = row_rect;
+        buf.set_style(row_rect, Style::default().bg(bg));
+
+        // Field label
+        let label_style = if is_focused {
+            Style::default()
+                .fg(theme.text_primary)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text_primary).bg(bg)
+        };
+        buf.set_span(area.x + 2, y, &Span::styled(label, label_style), input_w);
+
+        // Field value (right-aligned)
+        let val = &buffers[i].value;
+        let display_val = if child_key == "custom_model_api_key" && !val.is_empty() {
+            "\u{2022}".repeat(val.len().min(20))
+        } else if val.is_empty() {
+            "(not set)".to_string()
+        } else {
+            val.clone()
+        };
+        let val_w = display_val.width() as u16;
+        let val_x = (area.x + area.width).saturating_sub(2 + val_w);
+        let val_style = if val.is_empty() {
+            Style::default().fg(theme.gray_dim).bg(bg)
+        } else {
+            Style::default().fg(theme.text_secondary).bg(bg)
+        };
+        if val_x > area.x + 2 {
+            buf.set_span(val_x, y, &Span::styled(&display_val, val_style), val_w);
+        }
+
+        y += 1;
+    }
+
+    // ── Save button (focus=5). ────────────────────────────────────
+    if y >= area_end {
+        return rects;
+    }
+    let is_save_focused = field_focus == 5;
+    let save_bg = if is_save_focused {
+        theme.accent_user
+    } else {
+        theme.bg_base
+    };
+    let save_fg = if is_save_focused {
+        theme.bg_base
+    } else {
+        theme.text_primary
+    };
+    let save_style = Style::default()
+        .fg(save_fg)
+        .bg(save_bg)
+        .add_modifier(Modifier::BOLD);
+    let save_text = " [ Save Configuration ] ";
+    let save_x = area.x + 2;
+    buf.set_span(save_x, y, &Span::styled(save_text, save_style), save_text.len() as u16);
+    rects[5] = Rect {
+        x: save_x,
+        y,
+        width: save_text.len() as u16,
+        height: 1,
+    };
     rects
 }
 
@@ -3770,6 +4196,40 @@ fn build_shortcuts(state: &SettingsModalState) -> Vec<Shortcut<'static>> {
                 id: 0,
             },
         ],
+        SettingsModalMode::PickingCustomModelConfig { .. } => vec![
+            Shortcut {
+                label: "\u{2191}/\u{2193}/j/k nav",
+                clickable: false,
+                id: 0,
+            },
+            Shortcut {
+                label: "Space/Enter toggle/edit",
+                clickable: false,
+                id: 0,
+            },
+            Shortcut {
+                label: "Esc back",
+                clickable: false,
+                id: 0,
+            },
+        ],
+        SettingsModalMode::EditingCustomApiForm { .. } => vec![
+            Shortcut {
+                label: "Tab/\u{2191}/\u{2193} field",
+                clickable: false,
+                id: 0,
+            },
+            Shortcut {
+                label: "Enter edit / Save",
+                clickable: false,
+                id: 0,
+            },
+            Shortcut {
+                label: "Esc back",
+                clickable: false,
+                id: 0,
+            },
+        ],
     }
 }
 
@@ -3789,8 +4249,23 @@ pub fn handle_settings_key(state: &mut SettingsModalState, key: &KeyEvent) -> Se
         return SettingsKeyOutcome::Unchanged;
     }
 
-    // Suppress Repeat for toggle keys to avoid per-tick disk writes.
-    if key.kind == KeyEventKind::Repeat && matches!(key.code, KeyCode::Char(' ') | KeyCode::Enter) {
+    // Suppress Repeat Space events to avoid per-tick disk writes when
+    // Space acts as a Bool toggle inside PickingGroup / PickingCustomModelConfig.
+    // Enter is NOT filtered here — it is a submit/commit key in EditingValue,
+    // PickingEnum, and navigation in PickingCustomModelConfig/PickingGroup,
+    // none of which benefit from Repeat suppression (users tap Enter, they
+    // don't hold it to spam commits).
+    //
+    // NOTE: On Windows, crossterm maps the Return key as KeyCode::Enter
+    // in most terminals, but some (Win32 console) also emit
+    // KeyCode::Char('\r') for the same physical key. When both events
+    // arrive, the first fires an action and the second hits whichever
+    // mode the state transitioned to — potentially causing spurious
+    // navigation. We filter both forms here for safety, but only in
+    // Repeat (users hold Enter) — the initial Press always goes through.
+    if key.kind == KeyEventKind::Repeat
+        && matches!(key.code, KeyCode::Char(' ') | KeyCode::Enter)
+    {
         return SettingsKeyOutcome::Unchanged;
     }
 
@@ -3804,7 +4279,348 @@ pub fn handle_settings_key(state: &mut SettingsModalState, key: &KeyEvent) -> Se
         SettingsModalMode::FilterFocused => handle_filter_focused(state, key),
         SettingsModalMode::PickingEnum { .. } => handle_picking_enum(state, key),
         SettingsModalMode::PickingGroup { .. } => handle_picking_group(state, key),
+        SettingsModalMode::PickingCustomModelConfig { .. } => {
+            handle_picking_custom_model_config(state, key)
+        }
         SettingsModalMode::EditingValue { .. } => handle_editing_value(state, key),
+        SettingsModalMode::EditingCustomApiForm { .. } => {
+            handle_editing_custom_api_form(state, key)
+        }
+    }
+}
+
+/// Convert a SettingValue to the form string representation for
+/// EditingCustomApiForm buffers.
+fn value_to_form_string(val: &SettingValue) -> String {
+    match val {
+        SettingValue::String(s) => s.clone(),
+        SettingValue::Enum(s) => s.to_string(),
+        SettingValue::Bool(b) => b.to_string(),
+        SettingValue::Int(i) => i.to_string(),
+    }
+}
+
+/// Custom AI Model Config sub-sheet key routing. Up/Down moves between
+/// child fields; Space toggles Bool children; Enter opens the appropriate
+/// sub-picker (EditingValue for String, PickingEnum for Enum/DynamicEnum);
+/// Esc returns to Browse.
+fn handle_picking_custom_model_config(
+    state: &mut SettingsModalState,
+    key: &KeyEvent,
+) -> SettingsKeyOutcome {
+    let (group_key, child_idx) = match &state.mode {
+        SettingsModalMode::PickingCustomModelConfig { key, child_idx } => (*key, *child_idx),
+        _ => return SettingsKeyOutcome::Unchanged,
+    };
+    let children = group_children(state, group_key);
+    if children.is_empty() {
+        state.transition_to_browse();
+        return SettingsKeyOutcome::Changed;
+    }
+
+    match key.code {
+        KeyCode::Down | KeyCode::Char('j') => {
+            if child_idx + 1 >= children.len() {
+                return SettingsKeyOutcome::Unchanged;
+            }
+            state.mode = SettingsModalMode::PickingCustomModelConfig {
+                key: group_key,
+                child_idx: child_idx + 1,
+            };
+            SettingsKeyOutcome::Changed
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if child_idx == 0 {
+                return SettingsKeyOutcome::Unchanged;
+            }
+            state.mode = SettingsModalMode::PickingCustomModelConfig {
+                key: group_key,
+                child_idx: child_idx - 1,
+            };
+            SettingsKeyOutcome::Changed
+        }
+        // Space toggles Bool children in-place (sheet stays open).
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            let Some(child_key) = children.get(child_idx).copied() else {
+                return SettingsKeyOutcome::Unchanged;
+            };
+            let Some(child_meta) = state.registry.find(child_key) else {
+                return SettingsKeyOutcome::Unchanged;
+            };
+            match &child_meta.kind {
+                SettingKind::Bool { .. } => {
+                    // Toggle the Bool in place.
+                    let cur = match state.value_for(child_key) {
+                        Some(SettingValue::Bool(b)) => b,
+                        _ => return SettingsKeyOutcome::Unchanged,
+                    };
+                    match action_for_bool(child_key, !cur) {
+                        Some(action) => SettingsKeyOutcome::Action(action),
+                        None => SettingsKeyOutcome::Unchanged,
+                    }
+                }
+                SettingKind::String { .. } => {
+                    // Open inline editor. Save current mode as previous_mode
+                    // so Esc from EditingValue returns to this sheet.
+                    let buffer = match state.value_for(child_key) {
+                        Some(SettingValue::String(s)) => s,
+                        _ => String::new(),
+                    };
+                    let cursor_byte = buffer.len();
+                    state.previous_mode = Some(Box::new(SettingsModalMode::PickingCustomModelConfig {
+                        key: group_key,
+                        child_idx,
+                    }));
+                    state.mode = SettingsModalMode::EditingValue {
+                        key: child_key,
+                        buffer,
+                        cursor_byte,
+                        validation_error: None,
+                    };
+                    SettingsKeyOutcome::Changed
+                }
+                SettingKind::Enum { .. } | SettingKind::DynamicEnum { .. } => {
+                    // Open enum picker. Save current mode as previous_mode.
+                    state.previous_mode = Some(Box::new(SettingsModalMode::PickingCustomModelConfig {
+                        key: group_key,
+                        child_idx,
+                    }));
+                    // Reuse the existing try_enter_picking_enum logic by
+                    // temporarily changing `selected` to point to this child,
+                    // then restoring it. Actually, `try_enter_picking_enum`
+                    // works on `focused_setting()` which reads `selected` and
+                    // `rows`. Since the child isn't in `rows`, we can't use
+                    // it directly. Instead, manually construct the PickingEnum
+                    // state inline.
+                    let (choices, default_val) = match &child_meta.kind {
+                        SettingKind::Enum { choices, default, .. } => {
+                            let resolved = effective_enum_choices(child_key, choices, &state.pager_snapshot);
+                            (resolved, *default)
+                        }
+                        SettingKind::DynamicEnum { default, .. } => {
+                            let resolved = effective_enum_choices(child_key, &[], &state.pager_snapshot);
+                            (resolved, *default)
+                        }
+                        _ => return SettingsKeyOutcome::Unchanged,
+                    };
+                    let current_val = state.value_for(child_key);
+                    let choices_idx = match &current_val {
+                        Some(SettingValue::Enum(e)) => choices
+                            .iter()
+                            .position(|c| c.canonical == *e)
+                            .unwrap_or(0),
+                        Some(SettingValue::String(s)) if !s.is_empty() => choices
+                            .iter()
+                            .position(|c| c.canonical == *s)
+                            .unwrap_or(0),
+                        _ => 0,
+                    };
+                    let original_value = current_val.unwrap_or_else(|| {
+                        match &child_meta.kind {
+                            SettingKind::DynamicEnum { .. } => {
+                                SettingValue::String(choices.first().map(|c| c.canonical.to_string()).unwrap_or_default())
+                            }
+                            _ => SettingValue::Enum(choices.first().map(|c| c.canonical).unwrap_or(default_val)),
+                        }
+                    });
+                    state.mode = SettingsModalMode::PickingEnum {
+                        key: child_key,
+                        choices_idx,
+                        supports_preview: false,
+                        original_value,
+                    };
+                    SettingsKeyOutcome::Changed
+                }
+                _ => SettingsKeyOutcome::Unchanged,
+            }
+        }
+        KeyCode::Esc => {
+            state.transition_to_browse();
+            SettingsKeyOutcome::Changed
+        }
+        _ => SettingsKeyOutcome::Unchanged,
+    }
+}
+
+/// Custom API Config Form key routing.
+///
+/// - Tab / Shift-Tab: cycle field focus (0-4 = fields, 5 = Save button)
+/// - Enter on a String field: open inline editor (EditingValue sub-mode)
+/// - Enter on Save button (focus=5): dispatch SaveCustomApiConfig action
+/// - Esc: return to Browse
+fn handle_editing_custom_api_form(
+    state: &mut SettingsModalState,
+    key: &KeyEvent,
+) -> SettingsKeyOutcome {
+    let mode_key = match &state.mode {
+        SettingsModalMode::EditingCustomApiForm { key, .. } => *key,
+        _ => return SettingsKeyOutcome::Unchanged,
+    };
+
+    let child_keys: &[&str] = &[
+        "custom_model_base_url",
+        "custom_model_api_key",
+        "custom_model_api_backend",
+        "custom_model_fetch_models",
+        "custom_model_selected",
+    ];
+
+    match key.code {
+        KeyCode::Tab | KeyCode::Down | KeyCode::Char('j') => {
+            let current_focus = match &state.mode {
+                SettingsModalMode::EditingCustomApiForm { field_focus, .. } => *field_focus,
+                _ => return SettingsKeyOutcome::Unchanged,
+            };
+            if current_focus >= 5 {
+                return SettingsKeyOutcome::Unchanged;
+            }
+            let new_focus = current_focus + 1;
+            // Use std::mem::replace instead of std::mem::take (no Default bound)
+            let prev_mode = std::mem::replace(&mut state.mode, SettingsModalMode::Browse);
+            let buffers = match prev_mode {
+                SettingsModalMode::EditingCustomApiForm { buffers, .. } => buffers,
+                _ => unreachable!(),
+            };
+            state.mode = SettingsModalMode::EditingCustomApiForm {
+                key: mode_key,
+                field_focus: new_focus,
+                buffers,
+            };
+            SettingsKeyOutcome::Changed
+        }
+        KeyCode::BackTab | KeyCode::Up | KeyCode::Char('k') => {
+            let current_focus = match &state.mode {
+                SettingsModalMode::EditingCustomApiForm { field_focus, .. } => *field_focus,
+                _ => return SettingsKeyOutcome::Unchanged,
+            };
+            if current_focus == 0 {
+                return SettingsKeyOutcome::Unchanged;
+            }
+            let new_focus = current_focus - 1;
+            let prev_mode = std::mem::replace(&mut state.mode, SettingsModalMode::Browse);
+            let buffers = match prev_mode {
+                SettingsModalMode::EditingCustomApiForm { buffers, .. } => buffers,
+                _ => unreachable!(),
+            };
+            state.mode = SettingsModalMode::EditingCustomApiForm {
+                key: mode_key,
+                field_focus: new_focus,
+                buffers,
+            };
+            SettingsKeyOutcome::Changed
+        }
+        KeyCode::Enter => {
+            let (field_focus, buffers) = match &state.mode {
+                SettingsModalMode::EditingCustomApiForm { field_focus, buffers, .. } => {
+                    (*field_focus, buffers.clone())
+                }
+                _ => return SettingsKeyOutcome::Unchanged,
+            };
+
+            if field_focus == 5 {
+                // Save button pressed: dispatch SaveCustomApiConfig with all buffer values.
+                // buffers[3] is "true"/"false" string → parse to bool.
+                return SettingsKeyOutcome::Action(Action::SaveCustomApiConfig {
+                    base_url: buffers[0].value.clone(),
+                    api_key: buffers[1].value.clone(),
+                    api_backend: buffers[2].value.clone(),
+                    fetch_models: buffers[3].value == "true",
+                    model: buffers[4].value.clone(),
+                });
+            }
+
+            // For field focus 0,1,2,4 (string/enum fields) — open inline editor.
+            // Focus 3 is bool (fetch_models) — toggle it directly.
+            let child_key = match child_keys.get(field_focus) {
+                Some(k) => k,
+                None => return SettingsKeyOutcome::Unchanged,
+            };
+
+            let Some(child_meta) = state.registry.find(child_key) else {
+                return SettingsKeyOutcome::Unchanged;
+            };
+
+            match &child_meta.kind {
+                SettingKind::Bool { .. } => {
+                    // Toggle the bool value in the buffer.
+                    let cur = buffers[field_focus].value == "true";
+                    let new_val = if cur { "false" } else { "true" };
+                    let mut new_buffers = buffers;
+                    new_buffers[field_focus] = EditingCustomApiBuffer {
+                        value: new_val.to_string(),
+                        cursor_byte: new_val.len(),
+                    };
+                    state.mode = SettingsModalMode::EditingCustomApiForm {
+                        key: mode_key,
+                        field_focus,
+                        buffers: new_buffers,
+                    };
+                    SettingsKeyOutcome::Changed
+                }
+                SettingKind::String { .. } => {
+                    // Open inline editor for the field value; on commit,
+                    // update the buffer instead of dispatching directly.
+                    let buffer = buffers[field_focus].value.clone();
+                    let cursor_byte = buffer.len();
+                    state.previous_mode = Some(Box::new(
+                        SettingsModalMode::EditingCustomApiForm {
+                            key: mode_key,
+                            field_focus,
+                            buffers,
+                        },
+                    ));
+                    state.mode = SettingsModalMode::EditingValue {
+                        key: child_key,
+                        buffer,
+                        cursor_byte,
+                        validation_error: None,
+                    };
+                    SettingsKeyOutcome::Changed
+                }
+                SettingKind::Enum { .. } | SettingKind::DynamicEnum { .. } => {
+                    // Open enum picker; on commit, update the buffer.
+                    let (choices, _default_val) = match &child_meta.kind {
+                        SettingKind::Enum { choices, default, .. } => {
+                            let resolved = effective_enum_choices(child_key, choices, &state.pager_snapshot);
+                            (resolved, *default)
+                        }
+                        SettingKind::DynamicEnum { default, .. } => {
+                            let resolved = effective_enum_choices(child_key, &[], &state.pager_snapshot);
+                            (resolved, *default)
+                        }
+                        _ => return SettingsKeyOutcome::Unchanged,
+                    };
+                    let current_buf = buffers[field_focus].value.clone();
+                    let choices_idx = if current_buf.is_empty() {
+                        0
+                    } else {
+                        choices.iter()
+                            .position(|c| c.canonical == current_buf || c.display == current_buf)
+                            .unwrap_or(0)
+                    };
+                    state.previous_mode = Some(Box::new(
+                        SettingsModalMode::EditingCustomApiForm {
+                            key: mode_key,
+                            field_focus,
+                            buffers,
+                        },
+                    ));
+                    state.mode = SettingsModalMode::PickingEnum {
+                        key: child_key,
+                        choices_idx,
+                        supports_preview: false,
+                        original_value: SettingValue::String(current_buf.clone()),
+                    };
+                    SettingsKeyOutcome::Changed
+                }
+                _ => SettingsKeyOutcome::Unchanged,
+            }
+        }
+        KeyCode::Esc => {
+            state.transition_to_browse();
+            SettingsKeyOutcome::Changed
+        }
+        _ => SettingsKeyOutcome::Unchanged,
     }
 }
 
@@ -3876,6 +4692,42 @@ fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> Settin
                 state.registry.find(setting_key).map(|m| &m.kind),
                 Some(SettingKind::DynamicEnum { .. })
             );
+            // Check if this picker was opened from the Custom API Form.
+            let is_from_custom_form = matches!(
+                state.previous_mode.as_ref().map(|m| &**m),
+                Some(SettingsModalMode::EditingCustomApiForm { .. })
+            );
+            if is_from_custom_form {
+                // Resolve the chosen canonical value.
+                let chosen = if kind_is_dynamic {
+                    picker_choice_at_owned(state, setting_key, choices_idx)
+                        .unwrap_or_default()
+                } else {
+                    picker_choice_at(state, setting_key, choices_idx)
+                        .unwrap_or("")
+                        .to_string()
+                };
+                let prev = state.previous_mode.take();
+                if let Some(SettingsModalMode::EditingCustomApiForm {
+                    key: form_key,
+                    field_focus,
+                    mut buffers,
+                }) = prev.map(|b| *b)
+                {
+                    let idx = field_focus.min(4);
+                    let cursor_byte = chosen.len();
+                    buffers[idx] = EditingCustomApiBuffer {
+                        value: chosen,
+                        cursor_byte,
+                    };
+                    state.mode = SettingsModalMode::EditingCustomApiForm {
+                        key: form_key,
+                        field_focus,
+                        buffers,
+                    };
+                    return SettingsKeyOutcome::Changed;
+                }
+            }
             state.transition_to_browse();
             if kind_is_dynamic {
                 let Some(canonical) = picker_choice_at_owned(state, setting_key, choices_idx)
@@ -4085,6 +4937,35 @@ fn handle_editing_value(state: &mut SettingsModalState, key: &KeyEvent) -> Setti
             if error.is_some() {
                 update_editing_value_buffer(state, buffer, cursor_byte, error);
                 return SettingsKeyOutcome::Unchanged;
+            }
+            // Check if we are editing from within the Custom API Form.
+            // If so, commit the value back to the form buffer instead of
+            // dispatching an action.
+            let is_from_custom_form = matches!(
+                state.previous_mode.as_ref().map(|m| &**m),
+                Some(SettingsModalMode::EditingCustomApiForm { .. })
+            );
+            if is_from_custom_form {
+                let prev = state.previous_mode.take();
+                if let Some(SettingsModalMode::EditingCustomApiForm {
+                    key: form_key,
+                    field_focus,
+                    mut buffers,
+                }) = prev.map(|b| *b)
+                {
+                    // Update the buffer for the focused field.
+                    let idx = field_focus.min(4);
+                    buffers[idx] = EditingCustomApiBuffer {
+                        value: buffer.clone(),
+                        cursor_byte: buffer.len(),
+                    };
+                    state.mode = SettingsModalMode::EditingCustomApiForm {
+                        key: form_key,
+                        field_focus,
+                        buffers,
+                    };
+                    return SettingsKeyOutcome::Changed;
+                }
             }
             // Dispatch the typed Action and transition to Browse.
             let action_opt = match &kind_snapshot {
@@ -4758,6 +5639,12 @@ pub fn handle_settings_mouse(
             SettingsModalMode::PickingGroup { .. } => {
                 return handle_picking_group(state, &synthetic);
             }
+            SettingsModalMode::PickingCustomModelConfig { .. } => {
+                return handle_picking_custom_model_config(state, &synthetic);
+            }
+            SettingsModalMode::EditingCustomApiForm { .. } => {
+                return handle_editing_custom_api_form(state, &synthetic);
+            }
             SettingsModalMode::EditingValue { .. } => {
                 return handle_editing_value(state, &synthetic);
             }
@@ -4811,6 +5698,14 @@ pub fn handle_settings_mouse(
     // child in place (same bounded-viewport, scroll-is-a-no-op contract).
     if matches!(state.mode, SettingsModalMode::PickingGroup { .. }) {
         let outcome = handle_group_mouse(state, kind, column, row);
+        return upgrade_if_breadcrumb_flipped(outcome, breadcrumb_hover_flipped);
+    }
+
+    // EditingCustomApiForm: hover moves the field focus; a click on a field
+    // row focuses + activates it (same as Enter), a click on the Save
+    // button dispatches `SaveCustomApiConfig`.
+    if matches!(state.mode, SettingsModalMode::EditingCustomApiForm { .. }) {
+        let outcome = handle_custom_api_form_mouse(state, kind, column, row);
         return upgrade_if_breadcrumb_flipped(outcome, breadcrumb_hover_flipped);
     }
 
@@ -5067,6 +5962,56 @@ fn handle_group_mouse(
         Some(action) => SettingsKeyOutcome::Action(action),
         None => SettingsKeyOutcome::Changed,
     }
+}
+
+/// Handle a mouse event while the modal is in `EditingCustomApiForm` mode.
+///
+/// Hover moves the field focus to the row under the cursor; a left-click
+/// focuses the clicked row AND activates it in one click — fields 0-4
+/// behave like Enter on that field (open editor/picker, toggle bool),
+/// the Save button (index 5) dispatches `SaveCustomApiConfig`. The
+/// activation reuses `handle_editing_custom_api_form` via a synthetic
+/// Enter so the keyboard and mouse paths share one implementation.
+fn handle_custom_api_form_mouse(
+    state: &mut SettingsModalState,
+    kind: MouseEventKind,
+    column: u16,
+    row: u16,
+) -> SettingsKeyOutcome {
+    let hovered = state
+        .custom_form_rects
+        .iter()
+        .position(|r| r.height > 0 && rect_contains(*r, column, row));
+
+    if matches!(kind, MouseEventKind::Moved) {
+        let cur_focus = match &state.mode {
+            SettingsModalMode::EditingCustomApiForm { field_focus, .. } => Some(*field_focus),
+            _ => None,
+        };
+        if hovered.is_some() && hovered != cur_focus {
+            if let SettingsModalMode::EditingCustomApiForm { field_focus, .. } = &mut state.mode {
+                *field_focus = hovered.expect("checked is_some");
+            }
+            return SettingsKeyOutcome::Changed;
+        }
+        return SettingsKeyOutcome::Unchanged;
+    }
+
+    let MouseEventKind::Down(crossterm::event::MouseButton::Left) = kind else {
+        return SettingsKeyOutcome::Unchanged;
+    };
+    let Some(idx) = hovered else {
+        return SettingsKeyOutcome::Unchanged;
+    };
+    if let SettingsModalMode::EditingCustomApiForm { field_focus, .. } = &mut state.mode {
+        *field_focus = idx;
+    } else {
+        return SettingsKeyOutcome::Unchanged;
+    }
+    // Synthesize Enter on the newly-focused row — reuses the keyboard
+    // handler's open-editor / toggle-bool / dispatch-save logic.
+    let synthetic = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+    handle_editing_custom_api_form(state, &synthetic)
 }
 
 /// Handle a mouse event while in `EditingValue` mode. Dispatches
@@ -5964,6 +6909,137 @@ mod tests {
         match outcome {
             SettingsKeyOutcome::Action(Action::SetCompactMode(true)) => {}
             other => panic!("expected SetCompactMode(true) from click, got {other:?}"),
+        }
+    }
+
+    /// Clicking the Save button in the Custom API Config form dispatches
+    /// `SaveCustomApiConfig` with the current buffer values.
+    #[test]
+    fn custom_api_form_mouse_click_on_save_dispatches_action() {
+        let mut s = make_state();
+        s.mode = SettingsModalMode::EditingCustomApiForm {
+            key: "custom_model_config",
+            field_focus: 0,
+            buffers: [
+                EditingCustomApiBuffer {
+                    value: "https://api.example.com/v1".to_string(),
+                    cursor_byte: 26,
+                },
+                EditingCustomApiBuffer {
+                    value: "sk-test".to_string(),
+                    cursor_byte: 7,
+                },
+                EditingCustomApiBuffer {
+                    value: "openai".to_string(),
+                    cursor_byte: 6,
+                },
+                EditingCustomApiBuffer {
+                    value: "true".to_string(),
+                    cursor_byte: 4,
+                },
+                EditingCustomApiBuffer {
+                    value: "my-model".to_string(),
+                    cursor_byte: 8,
+                },
+            ],
+        };
+        // Simulate the post-render hit rects: 5 field rows + Save button.
+        s.custom_form_rects = (0..5u16)
+            .map(|y| Rect {
+                x: 0,
+                y,
+                width: 80,
+                height: 1,
+            })
+            .chain(std::iter::once(Rect {
+                x: 2,
+                y: 5,
+                width: 26,
+                height: 1,
+            }))
+            .collect();
+
+        let outcome = handle_settings_mouse(
+            &mut s,
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            5,
+            5,
+        );
+        match outcome {
+            SettingsKeyOutcome::Action(Action::SaveCustomApiConfig {
+                base_url,
+                api_key,
+                api_backend,
+                fetch_models,
+                model,
+            }) => {
+                assert_eq!(base_url, "https://api.example.com/v1");
+                assert_eq!(api_key, "sk-test");
+                assert_eq!(api_backend, "openai");
+                assert!(fetch_models);
+                assert_eq!(model, "my-model");
+            }
+            other => panic!("expected SaveCustomApiConfig from Save click, got {other:?}"),
+        }
+    }
+
+    /// Clicking the Fetch Models (bool) field row toggles its buffer in place.
+    #[test]
+    fn custom_api_form_mouse_click_on_bool_field_toggles_buffer() {
+        let mut s = make_state();
+        s.mode = SettingsModalMode::EditingCustomApiForm {
+            key: "custom_model_config",
+            field_focus: 0,
+            buffers: [
+                EditingCustomApiBuffer {
+                    value: String::new(),
+                    cursor_byte: 0,
+                },
+                EditingCustomApiBuffer {
+                    value: String::new(),
+                    cursor_byte: 0,
+                },
+                EditingCustomApiBuffer {
+                    value: String::new(),
+                    cursor_byte: 0,
+                },
+                EditingCustomApiBuffer {
+                    value: "false".to_string(),
+                    cursor_byte: 5,
+                },
+                EditingCustomApiBuffer {
+                    value: String::new(),
+                    cursor_byte: 0,
+                },
+            ],
+        };
+        s.custom_form_rects = (0..6u16)
+            .map(|y| Rect {
+                x: 0,
+                y,
+                width: 80,
+                height: 1,
+            })
+            .collect();
+
+        // Click field row 3 (fetch_models, bool) — buffer flips to "true".
+        let outcome = handle_settings_mouse(
+            &mut s,
+            MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            5,
+            3,
+        );
+        assert!(matches!(outcome, SettingsKeyOutcome::Changed));
+        match &s.mode {
+            SettingsModalMode::EditingCustomApiForm {
+                field_focus,
+                buffers,
+                ..
+            } => {
+                assert_eq!(*field_focus, 3);
+                assert_eq!(buffers[3].value, "true");
+            }
+            other => panic!("expected to stay in EditingCustomApiForm, got {other:?}"),
         }
     }
 

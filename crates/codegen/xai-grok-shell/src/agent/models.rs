@@ -378,12 +378,54 @@ impl ModelsManager {
             models.clone()
         };
 
+        let is_session = self.is_session_auth();
+
+        // DEBUG: log raw snapshot before any filtering
+        let raw_keys: Vec<String> = snapshot.keys().cloned().collect();
+        let raw_entries: Vec<String> = snapshot
+            .iter()
+            .map(|(k, e)| {
+                format!(
+                    "{}: model={} user_selectable={} hidden={} supported_in_api={} has_key={}",
+                    k,
+                    e.info.model,
+                    e.info.user_selectable,
+                    e.info.hidden,
+                    e.info.supported_in_api,
+                    e.api_key.is_some(),
+                )
+            })
+            .collect();
+        tracing::info!(
+            is_session_auth = is_session,
+            raw_keys = ?raw_keys,
+            raw_entries = ?raw_entries,
+            total_raw = snapshot.len(),
+            "DEBUGBOOT: available() raw snapshot"
+        );
+
         let selectable: IndexMap<_, _> = snapshot
             .into_iter()
             .filter(|(_, e)| e.info.user_selectable)
             .collect();
 
-        available_models(&selectable, self.is_session_auth())
+        let after_selectable_keys: Vec<String> = selectable.keys().cloned().collect();
+        tracing::info!(
+            after_selectable = after_selectable_keys.len(),
+            after_selectable_keys = ?after_selectable_keys,
+            "DEBUGBOOT: available() after user_selectable filter"
+        );
+
+        let result = available_models(&selectable, is_session);
+
+        let result_keys: Vec<String> = result.keys().map(|k| k.0.to_string()).collect();
+        tracing::info!(
+            result_count = result.len(),
+            result_keys = ?result_keys,
+            "DEBUGBOOT: available() final result"
+        );
+
+        result
     }
 
     pub(crate) fn task_model_error(&self, requested: &str) -> Option<String> {
@@ -643,6 +685,18 @@ impl ModelsManager {
         let available = self.available();
         let current = self.current_model_id();
         let count = available.len();
+
+        // DEBUG: log full available model keys and names
+        let model_keys: Vec<String> = available.keys().map(|k| k.0.to_string()).collect();
+        let model_names: Vec<String> = available.values().map(|v| v.name.clone()).collect();
+        tracing::info!(
+            model_count = count,
+            current_model = %current.0,
+            keys = ?model_keys,
+            names = ?model_names,
+            "DEBUGBOOT: notify_models_updated broadcast"
+        );
+
         xai_grok_telemetry::unified_log::info(
             "model catalog: notifying clients",
             None,

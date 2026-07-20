@@ -1878,6 +1878,46 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::ReloadModelsFromConfig => {
+            let tx = acp_tx.clone();
+            tasks.spawn(async move {
+                let params = serde_json::json!({});
+                let request = acp::ExtRequest::new(
+                    "x.ai/internal/reload_models",
+                    serde_json::value::to_raw_value(&params)
+                        .expect("serialize reload params")
+                        .into(),
+                );
+                match acp_send(request, &tx).await {
+                    Ok(resp) => {
+                        if let Some(err) = serde_json::from_str::<serde_json::Value>(
+                            resp.0.get(),
+                        )
+                        .ok()
+                        .and_then(|v| v.get("error").cloned())
+                        {
+                            let msg = err
+                                .as_str()
+                                .map(String::from)
+                                .unwrap_or_else(|| "unknown error".to_string());
+                            tracing::warn!(
+                                error = msg,
+                                "reload_models returned error"
+                            );
+                        } else {
+                            tracing::info!("model list reloaded via ACP request");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            "failed to send reload_models ACP request"
+                        );
+                    }
+                }
+                TaskResult::ReloadModelsComplete
+            });
+        }
         Effect::Authenticate {
             request_seq,
             method_id,

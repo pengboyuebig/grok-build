@@ -101,6 +101,9 @@ pub enum DynamicEnumSource {
     /// Models from the active session's catalog. Prepends a
     /// `"(no override)"` sentinel so the user can clear the setting.
     ActiveModelCatalog,
+    /// Models fetched from a user-supplied custom API endpoint.
+    /// The choices come from `PagerLocalSnapshot::custom_api_models`.
+    CustomApiModelCatalog,
 }
 
 /// Build the owned choice list for a `DynamicEnum` at picker-open time.
@@ -119,6 +122,22 @@ pub fn dynamic_enum_choices(
                 description: "Inherit the default model (no per-user override).".to_string(),
             });
             for (name, _id) in &snapshot.available_models {
+                out.push(OwnedEnumChoice {
+                    canonical: name.clone(),
+                    display: name.clone(),
+                    description: String::new(),
+                });
+            }
+            out
+        }
+        DynamicEnumSource::CustomApiModelCatalog => {
+            let mut out = Vec::with_capacity(snapshot.custom_api_models.len() + 1);
+            out.push(OwnedEnumChoice {
+                canonical: String::new(),
+                display: "(no override)".to_string(),
+                description: "Inherit the default model (no per-user override).".to_string(),
+            });
+            for name in &snapshot.custom_api_models {
                 out.push(OwnedEnumChoice {
                     canonical: name.clone(),
                     display: name.clone(),
@@ -279,6 +298,9 @@ pub struct PagerLocalSnapshot {
     /// language actually in effect when `[ui].voice_stt_language` is unset but
     /// an explicit `[voice].language` applies.
     pub voice_stt_language: String,
+    /// Model names fetched from the user's custom API endpoint.
+    /// Used by `CustomApiModelCatalog` dynamic enum source.
+    pub custom_api_models: Vec<String>,
 }
 
 impl Default for PagerLocalSnapshot {
@@ -302,6 +324,7 @@ impl Default for PagerLocalSnapshot {
             auto_mode_gate: false,
             ask_user_question_timeout_enabled: None,
             voice_stt_language: xai_grok_voice::STT_LANGUAGE_DEFAULT.to_string(),
+            custom_api_models: Vec::new(),
         }
     }
 }
@@ -324,6 +347,25 @@ pub fn canonical_voice_capture_mode(value: Option<&str>) -> &'static str {
 /// `auto`). Unknown/blank/`None` → `en`.
 pub fn canonical_voice_stt_language(value: Option<&str>) -> &'static str {
     xai_grok_voice::canonicalize_stt_language(value)
+}
+
+/// Canonicalize a raw custom-model API backend to a registry choice.
+/// Case-insensitive and trimmed. Unknown/blank/`None` → `"openai"`.
+pub fn canonical_custom_model_api_backend(value: Option<&str>) -> &'static str {
+    let raw = value.unwrap_or_default().trim();
+    if raw.eq_ignore_ascii_case("anthropic") {
+        "anthropic"
+    } else if raw.eq_ignore_ascii_case("azure") {
+        "azure"
+    } else if raw.eq_ignore_ascii_case("google") {
+        "google"
+    } else if raw.eq_ignore_ascii_case("groq") {
+        "groq"
+    } else if raw.eq_ignore_ascii_case("custom") {
+        "custom"
+    } else {
+        "openai"
+    }
 }
 
 /// Canonicalize a raw hunk-tracker mode to a registry choice. Case-insensitive
@@ -648,6 +690,33 @@ pub fn current_value_for(
                 ui.fork_secondary_model.clone()
             }
         })),
+        // Custom model settings: SHELL-owned, read from UiConfig.
+        // These are plain strings stored in shell config.
+        "custom_model_base_url" => Some(SettingValue::String(
+            ui.custom_model_base_url.clone().unwrap_or_default(),
+        )),
+        "custom_model_api_key" => Some(SettingValue::String(
+            ui.custom_model_api_key.clone().unwrap_or_default(),
+        )),
+        "custom_model_api_backend" => {
+            let backend = ui.custom_model_api_backend
+                .as_deref()
+                .map(|s| -> &'static str {
+                    // canoncalize_config_key returns a static str for known values
+                    crate::settings::registry::canonical_custom_model_api_backend(Some(s))
+                })
+                .unwrap_or("openai");
+            Some(SettingValue::Enum(backend))
+        },
+        // custom_model_fetch_models: SHELL-owned, read from UiConfig.
+        // Defaults to false.
+        "custom_model_fetch_models" => Some(SettingValue::Bool(
+            ui.custom_model_fetch_models.unwrap_or(false),
+        )),
+        // custom_model_selected: DynamicEnum, reads from snapshot.
+        "custom_model_selected" => Some(SettingValue::String(
+            ui.custom_model_selected.clone().unwrap_or_default(),
+        )),
 
         _ => None,
     }

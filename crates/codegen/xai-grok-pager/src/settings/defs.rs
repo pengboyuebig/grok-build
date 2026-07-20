@@ -6,6 +6,7 @@
 
 use super::registry::{
     DynamicEnumSource, EnumChoice, SettingCategory, SettingKind, SettingMeta, SettingOwner,
+    StringValidator,
 };
 use crate::appearance::ScrollMode;
 use crate::appearance::TextSelection;
@@ -89,6 +90,43 @@ const THEME_CHOICES: &[EnumChoice] = &[
 // (2) `EnumChoice` here, (3) `set_yolo_mode_inner` update,
 // (4) `load_permission_mode` arm, (5) tests. `Plan` is excluded —
 // it lives on its own `plan_mode` setting.
+// ---------------------------------------------------------------------------
+// API backend choices for custom model configuration.
+// ---------------------------------------------------------------------------
+
+const CUSTOM_MODEL_API_BACKEND_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "openai",
+        display: "OpenAI",
+        description: "OpenAI-compatible API endpoint.",
+    },
+    EnumChoice {
+        canonical: "anthropic",
+        display: "Anthropic",
+        description: "Anthropic API endpoint.",
+    },
+    EnumChoice {
+        canonical: "azure",
+        display: "Azure OpenAI",
+        description: "Azure OpenAI service endpoint.",
+    },
+    EnumChoice {
+        canonical: "google",
+        display: "Google AI",
+        description: "Google AI / Gemini API endpoint.",
+    },
+    EnumChoice {
+        canonical: "groq",
+        display: "Groq",
+        description: "Groq API endpoint.",
+    },
+    EnumChoice {
+        canonical: "custom",
+        display: "Custom",
+        description: "Other OpenAI-compatible provider.",
+    },
+];
+
 // ---------------------------------------------------------------------------
 
 // Choice order: safe → classifier → unsafe (Default → Ask → Auto → Always approve).
@@ -500,6 +538,17 @@ const CONTEXTUAL_HINTS_CHILDREN: &[&str] = &[
     "contextual_hints.send_now",
     "contextual_hints.small_screen",
     "contextual_hints.word_select",
+];
+
+/// Child settings shown inside the "Custom AI Model Config" group sub-sheet.
+/// These are registered as normal Settings but hidden from the top-level
+/// list (`build_rows` skips any key that is a group child).
+const CUSTOM_MODEL_CHILDREN: &[&str] = &[
+    "custom_model_base_url",
+    "custom_model_api_key",
+    "custom_model_api_backend",
+    "custom_model_fetch_models",
+    "custom_model_selected",
 ];
 
 /// Build the catalog. Called once at process start via
@@ -1409,13 +1458,43 @@ pub fn default_settings() -> Vec<SettingMeta> {
             restart_required: false,
             hidden_in_minimal: false,
         },
+        // ── Custom AI Model Config (group sub-sheet) ──────────────────
+        SettingMeta {
+            key: "custom_model_config",
+            category: SettingCategory::Models,
+            owner: SettingOwner::Shell,
+            label: "Custom AI Model Config",
+            description: "Configure a custom AI model provider: set base URL, API key, backend type, fetch available models, and select one.",
+            keywords: &[
+                "custom",
+                "ai",
+                "model",
+                "provider",
+                "api",
+                "config",
+                "configuration",
+                "setup",
+                "endpoint",
+                "backend",
+                "openai",
+                "anthropic",
+                "azure",
+                "google",
+                "groq",
+            ],
+            kind: SettingKind::Group {
+                children: CUSTOM_MODEL_CHILDREN,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
         // ── TodoGate (runtime turn-end backstop) ──────────────────────
         //
         // Only the CLI flag (`--todo-gate`) is wired. Settings-modal
         // entries for `[reminder.todo_gate]` are deferred — the modal
         // dispatcher requires per-key action arms in
         // `settings_modal.rs` + `app/dispatch.rs` + `settings/registry.rs`
-        // that don't yet have a place to land.
+        // that don't yet have a place to hold.
         // SHELL-owned. `restart_required: false` — the config-reloader
         // rebroadcasts UI changes; mid-session forks pick up new values.
         // Empty-string default = "no opinion" / use shell's resolution.
@@ -1438,6 +1517,120 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 default: "",
                 source: DynamicEnumSource::ActiveModelCatalog,
                 supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        // ── Custom Model Configuration ────────────────────────────────
+        //
+        // Allows users to configure a custom AI model provider by setting
+        // base_url, api_key, api_backend, then fetching available models.
+        // SHELL-owned so values persist to shell config.
+        SettingMeta {
+            key: "custom_model_base_url",
+            category: SettingCategory::Models,
+            owner: SettingOwner::Shell,
+            label: "Custom API Base URL",
+            description: "Base URL for your custom AI model provider API.",
+            keywords: &[
+                "custom",
+                "api",
+                "base",
+                "url",
+                "model",
+                "provider",
+                "endpoint",
+            ],
+            kind: SettingKind::String {
+                default: "",
+                validator: StringValidator::Any,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "custom_model_api_key",
+            category: SettingCategory::Models,
+            owner: SettingOwner::Shell,
+            label: "Custom API Key",
+            description: "API key for your custom AI model provider. Will be masked in the UI.",
+            keywords: &[
+                "custom",
+                "api",
+                "key",
+                "secret",
+                "token",
+                "auth",
+                "model",
+            ],
+            kind: SettingKind::String {
+                default: "",
+                validator: StringValidator::Any,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "custom_model_api_backend",
+            category: SettingCategory::Models,
+            owner: SettingOwner::Shell,
+            label: "Custom API Backend",
+            description: "Select the AI provider backend for your custom API.",
+            keywords: &[
+                "custom",
+                "api",
+                "backend",
+                "provider",
+                "openai",
+                "anthropic",
+                "azure",
+                "google",
+                "groq",
+            ],
+            kind: SettingKind::Enum {
+                default: "openai",
+                choices: CUSTOM_MODEL_API_BACKEND_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "custom_model_fetch_models",
+            category: SettingCategory::Models,
+            owner: SettingOwner::Pager,
+            label: "Fetch Models",
+            description: "Toggle to fetch available models from your custom API provider.",
+            keywords: &[
+                "custom",
+                "fetch",
+                "models",
+                "list",
+                "refresh",
+                "api",
+            ],
+            kind: SettingKind::Bool {
+                default: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "custom_model_selected",
+            category: SettingCategory::Models,
+            owner: SettingOwner::Shell,
+            label: "Custom Model",
+            description: "Enter the model name to use with your custom API provider (e.g. gpt-4o, claude-3-opus).",
+            keywords: &[
+                "custom",
+                "model",
+                "selected",
+                "api",
+                "provider",
+            ],
+            kind: SettingKind::String {
+                default: "",
+                validator: StringValidator::Any,
             },
             restart_required: false,
             hidden_in_minimal: false,

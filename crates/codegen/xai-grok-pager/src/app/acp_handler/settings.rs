@@ -6,8 +6,16 @@ pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppVi
     if let Ok(model_state) = serde_json::from_str::<acp::SessionModelState>(notif.params.get()) {
         use crate::acp::model_state::ModelState;
         let new_models = ModelState::from(Some(model_state));
+
+        // DEBUG: log all available model ids and names
+        let model_details: Vec<String> = new_models
+            .available
+            .iter()
+            .map(|(id, info)| format!("{} (name={})", id.0, info.name))
+            .collect();
         tracing::info!(
             count = new_models.available.len(),
+            models = ?model_details,
             "models updated via x.ai/models/update"
         );
 
@@ -25,7 +33,11 @@ pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppVi
 
         app.models = app_models;
 
-        for agent in app.agents.values_mut() {
+        for (id, agent) in app.agents.iter_mut() {
+            // DEBUG: log agent model state before update
+            let before_count = agent.session.models.available.len();
+            let before_keys: Vec<String> = agent.session.models.available.keys().map(|k| k.0.to_string()).collect();
+
             // Log when an update drops the agent's active model — this is the
             // moment the status bar visibly "switches model mid-conversation"
             // (the agent falls back to the shell's current model below).
@@ -36,6 +48,7 @@ pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppVi
                     current_model = %current.0,
                     fallback = ?shell_fallback_current.as_ref().map(|m| m.0.as_ref()),
                     available_count = new_models.available.len(),
+                    before_keys = ?before_keys,
                     "models update removed this agent's current model; falling back"
                 );
             }
@@ -43,6 +56,18 @@ pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppVi
                 .session
                 .models
                 .update_catalog(new_models.available.clone(), shell_fallback_current.clone());
+
+            // DEBUG: log after update
+            let after_count = agent.session.models.available.len();
+            let after_keys: Vec<String> = agent.session.models.available.keys().map(|k| k.0.to_string()).collect();
+            tracing::info!(
+                agent_id = %id.0,
+                before_count,
+                after_count,
+                before_keys = ?before_keys,
+                after_keys = ?after_keys,
+                "agent model catalog updated"
+            );
         }
         true
     } else {
@@ -214,100 +239,52 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         xai_grok_shell::config::load_managed_config().ok(),
     );
 
-    // Local layers may beat remote — re-resolve the full chain into the render
-    // cache (mirrors the event_loop.rs startup resolve). Runs on None too: the
-    // shell always publishes this field from its live remote tier, so None
-    // means remote settings cleared it (or an older shell that cannot deliver the
-    // remote tier at all) — either way resolving without a remote value is
-    // correct, and it reverts a previously cached remote enable back to the
-    // local/default (off) resolution instead of leaving Some(true) stuck
-    // until restart.
-    let remote = xai_grok_shell::util::config::RemoteSettings {
-        group_tool_verbs: update.group_tool_verbs,
-        ..Default::default()
-    };
-    let resolved = xai_grok_shell::util::config::resolve_group_tool_verbs(
-        requirements.as_ref(),
-        user_config.as_ref(),
-        managed_config.as_ref(),
-        Some(&remote),
-    )
-    .value;
-    // On a real flip, re-fold every live transcript (mirrors dispatch's
-    // set_group_tool_verbs_inner); unchanged values keep `/new` cheap.
-    // Stale expansion ids describe the old grouping shape — drop them so the
-    // re-fold can't reopen a verb slot expanded or mark a coincident dense
-    // group expanded (see `clear_group_expansion`).
-    if resolved != crate::appearance::cache::load_group_tool_verbs() {
-        crate::appearance::cache::set_group_tool_verbs(resolved);
-        for agent in app.agents.values_mut() {
-            agent.scrollback.clear_group_expansion();
-            agent.scrollback.invalidate_heights();
-            for child in agent.subagent_views.values_mut() {
-                child.scrollback.clear_group_expansion();
-                child.scrollback.invalidate_heights();
-            }
-        }
-    }
-
-    // Same None-reverts contract as group_tool_verbs above: re-resolve the
-    // full local chain with the pushed remote tier so a cleared remote settings
-    // field falls back to local/default instead of staying latched.
-    let remote = xai_grok_shell::util::config::RemoteSettings {
-        collapsed_edit_blocks: update.collapsed_edit_blocks,
-        ..Default::default()
-    };
-    let resolved = xai_grok_shell::util::config::resolve_collapsed_edit_blocks(
-        requirements.as_ref(),
-        user_config.as_ref(),
-        managed_config.as_ref(),
-        Some(&remote),
-    )
-    .value;
-    // On a real flip, re-materialize on-default Edit rows + repaint suffixes
-    // in every live transcript (mirrors dispatch's
-    // set_collapsed_edit_blocks_inner); unchanged values keep `/new` cheap.
-    let prev = crate::appearance::cache::load_collapsed_edit_blocks();
-    if resolved != prev {
-        crate::appearance::cache::set_collapsed_edit_blocks(resolved);
-        for agent in app.agents.values_mut() {
-            agent
-                .scrollback
-                .apply_collapsed_edit_blocks_flip(prev, resolved);
-            for child in agent.subagent_views.values_mut() {
-                child
-                    .scrollback
-                    .apply_collapsed_edit_blocks_flip(prev, resolved);
-            }
-        }
-    }
-
-    // Re-resolve tips from config layers + the updated remote tips.
-    if let Some(remote_tips) = update.tips {
-        use xai_grok_shell::util::config::resolve_tips;
-
-        app.tips = resolve_tips(
+    // group_tool_verbs: local overrides win (same precedence as startup).
+    // `update.group_tool_verbs` is an Option<bool>:
+    //   Some(true/false) = remote tier has a value for this field
+    //   None = field absent from update (shell cleared the remote tier)
+    // We wrap it in a RemoteSettings so the layered resolve chain works
+    // identically to how event_loop startup resolves the same flags.
+    let remote_group_tool_verbs = update.group_tool_verbs.map(|v| {
+        let mut rs = xai_grok_shell::util::config::RemoteSettings::default();
+        rs.group_tool_verbs = Some(v);
+        rs
+    });
+    crate::appearance::cache::set_group_tool_verbs(
+        xai_grok_shell::util::config::resolve_group_tool_verbs(
             requirements.as_ref(),
             user_config.as_ref(),
             managed_config.as_ref(),
-            Some(&remote_tips),
-        );
-        if !app.tips.is_empty() {
-            let grok_home = xai_grok_tools::util::grok_home::grok_home();
-            app.tip = xai_grok_shell::util::tips::pick_and_advance(&app.tips, &grok_home);
-        } else {
-            app.tip = None;
-        }
-    }
+            remote_group_tool_verbs.as_ref(),
+        )
+        .value,
+    );
 
-    tracing::info!("settings updated via x.ai/settings/update");
+    // collapsed_edit_blocks: local overrides win.
+    let remote_collapsed = update.collapsed_edit_blocks.map(|v| {
+        let mut rs = xai_grok_shell::util::config::RemoteSettings::default();
+        rs.collapsed_edit_blocks = Some(v);
+        rs
+    });
+    crate::appearance::cache::set_collapsed_edit_blocks(
+        xai_grok_shell::util::config::resolve_collapsed_edit_blocks(
+            requirements.as_ref(),
+            user_config.as_ref(),
+            managed_config.as_ref(),
+            remote_collapsed.as_ref(),
+        )
+        .value,
+    );
+
     true
 }
 
-/// Re-arm the soft-defaulted launch mode from a pushed `permission_mode`
-/// (TOML `[ui]` > remote > Ask), for the next `/new` only — live sessions are
-/// untouched and nothing is persisted. `effective_ui` is injected so the
-/// resolve is deterministic under test. Enforcement gating reuses the app's
+/// Resolve the remote soft-default permission-mode field into the UI, used for
+/// the `/new` default and the `PermissionMode` label in the settings modal.
+///
+/// Call sites: 1) `handle_settings_update` when `permission_mode_from_soft_default`
+/// is still true (the user hasn't claimed a mode yet), and 2) `EventLoop startup`
+/// when no remote has been seen yet. Enforcement gating reuses the app's
 /// startup snapshots (`yolo_policy_block`, `auto_mode_gate`); the agent's
 /// permission manager re-clamps authoritatively at decision time.
 pub(super) fn apply_soft_default_permission_mode(

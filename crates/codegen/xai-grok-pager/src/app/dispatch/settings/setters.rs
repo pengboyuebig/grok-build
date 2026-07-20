@@ -1924,3 +1924,372 @@ pub(in crate::app::dispatch) fn set_display_refresh_auto_cadence(
         rollback_value: crate::settings::SettingValue::Bool(prev_effective),
     }]
 }
+
+// ---------------------------------------------------------------------------
+// Custom API model settings: base_url, api_key, api_backend, fetch_models,
+// and selected model.
+//
+// SHELL-OWNED, persisted to `[ui].custom_model_*`. These are pure TOML
+// mirrors — they update `app.current_ui` for display and persist to disk.
+// No live agent effect; the model-fetch logic lives in the shell layer.
+// ---------------------------------------------------------------------------
+
+/// State-only mutation for `custom_model_base_url`.
+pub(super) fn set_custom_model_base_url_inner(app: &mut AppView, value: String) {
+    app.current_ui.custom_model_base_url = Some(value);
+}
+
+/// Outer dispatcher for `Action::SetCustomModelBaseUrl`.
+/// Mirror + persist + toast. Idempotent: same-value → no-op.
+pub(in crate::app::dispatch) fn set_custom_model_base_url(
+    app: &mut AppView,
+    new: String,
+) -> Vec<Effect> {
+    if app.current_ui.custom_model_base_url.as_deref() == Some(&new) {
+        return vec![];
+    }
+    let prev = app.current_ui.custom_model_base_url.clone();
+    set_custom_model_base_url_inner(app, new.clone());
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "custom_model_base_url",
+        "setting changed",
+    );
+    app.show_toast("\u{2713} Custom model base URL: saved");
+    vec![Effect::PersistSetting {
+        key: "custom_model_base_url",
+        value: crate::settings::SettingValue::String(new),
+        rollback_value: crate::settings::SettingValue::String(
+            prev.clone().unwrap_or_default(),
+        ),
+    }]
+}
+
+/// State-only mutation for `custom_model_api_key`.
+pub(super) fn set_custom_model_api_key_inner(app: &mut AppView, value: String) {
+    app.current_ui.custom_model_api_key = Some(value);
+}
+
+/// Outer dispatcher for `Action::SetCustomModelApiKey`.
+/// Mirror + persist + toast. Idempotent: same-value → no-op.
+pub(in crate::app::dispatch) fn set_custom_model_api_key(
+    app: &mut AppView,
+    new: String,
+) -> Vec<Effect> {
+    if app.current_ui.custom_model_api_key.as_deref() == Some(&new) {
+        return vec![];
+    }
+    let prev = app.current_ui.custom_model_api_key.clone();
+    set_custom_model_api_key_inner(app, new.clone());
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "custom_model_api_key",
+        "setting changed",
+    );
+    app.show_toast("\u{2713} Custom model API key: saved");
+    vec![Effect::PersistSetting {
+        key: "custom_model_api_key",
+        value: crate::settings::SettingValue::String(new),
+        rollback_value: crate::settings::SettingValue::String(
+            prev.clone().unwrap_or_default(),
+        ),
+    }]
+}
+
+/// State-only mutation for `custom_model_api_backend`.
+pub(super) fn set_custom_model_api_backend_inner(app: &mut AppView, value: String) {
+    app.current_ui.custom_model_api_backend = Some(value);
+}
+
+/// Outer dispatcher for `Action::SetCustomModelApiBackend`.
+/// Mirror + persist + toast. Idempotent: same-value → no-op.
+pub(in crate::app::dispatch) fn set_custom_model_api_backend(
+    app: &mut AppView,
+    new: String,
+) -> Vec<Effect> {
+    let canonical = crate::settings::registry::canonical_custom_model_api_backend(Some(&new));
+    let prev = crate::settings::registry::canonical_custom_model_api_backend(
+        app.current_ui.custom_model_api_backend.as_deref(),
+    );
+    if prev == canonical {
+        return vec![];
+    }
+    set_custom_model_api_backend_inner(app, canonical.to_string());
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "custom_model_api_backend",
+        value = canonical,
+        "setting changed",
+    );
+    app.show_toast("\u{2713} Custom model API backend: saved");
+    vec![Effect::PersistSetting {
+        key: "custom_model_api_backend",
+        value: crate::settings::SettingValue::Enum(canonical),
+        rollback_value: crate::settings::SettingValue::Enum(prev),
+    }]
+}
+
+/// State-only mutation for `custom_model_fetch_models`.
+/// When enabled, populates `custom_api_models` with a list of
+/// known model names for the currently-selected API backend so
+/// the `custom_model_selected` picker has entries to show.
+pub(super) fn set_custom_model_fetch_models_inner(app: &mut AppView, value: bool) {
+    app.current_ui.custom_model_fetch_models = Some(value);
+    if value {
+        let backend = app
+            .current_ui
+            .custom_model_api_backend
+            .as_deref()
+            .unwrap_or("openai");
+        app.current_ui.custom_api_models = Some(match backend {
+            "anthropic" => vec![
+                "claude-sonnet-4-20250514".into(),
+                "claude-5-haiku-20250715".into(),
+                "claude-5-opus-20250715".into(),
+            ],
+            "azure" => vec![
+                "gpt-4o".into(),
+                "gpt-4o-mini".into(),
+                "gpt-4-turbo".into(),
+                "o1".into(),
+                "o3-mini".into(),
+            ],
+            "google" => vec![
+                "gemini-2.5-flash".into(),
+                "gemini-2.5-flash-lite".into(),
+                "gemini-2.5-pro".into(),
+            ],
+            "groq" => vec![
+                "deepseek-r1-distill-llama-70b".into(),
+                "llama-3.3-70b-versatile".into(),
+                "mixtral-8x7b-32768".into(),
+            ],
+            "custom" => vec![],
+            // openai (default)
+            _ => vec![
+                "gpt-4o".into(),
+                "gpt-4o-mini".into(),
+                "o1".into(),
+                "o3-mini".into(),
+            ],
+        });
+    }
+}
+
+/// Outer dispatcher for `Action::SetCustomModelFetchModels`.
+/// Mirror + persist + toast. Idempotent: same-value → no-op.
+pub(in crate::app::dispatch) fn set_custom_model_fetch_models(
+    app: &mut AppView,
+    new: bool,
+) -> Vec<Effect> {
+    if app.current_ui.custom_model_fetch_models == Some(new) {
+        return vec![];
+    }
+    let prev = app.current_ui.custom_model_fetch_models;
+    set_custom_model_fetch_models_inner(app, new);
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "custom_model_fetch_models",
+        value = new,
+        "setting changed",
+    );
+    app.show_toast(&save_success_toast("Fetch custom models", new));
+    vec![Effect::PersistSetting {
+        key: "custom_model_fetch_models",
+        value: crate::settings::SettingValue::Bool(new),
+        rollback_value: crate::settings::SettingValue::Bool(prev.unwrap_or(false)),
+    }]
+}
+
+/// State-only mutation for `custom_model_selected`.
+pub(super) fn set_custom_model_selected_inner(app: &mut AppView, value: String) {
+    app.current_ui.custom_model_selected = Some(value);
+}
+
+/// Outer dispatcher for `Action::SetCustomModelSelected`.
+/// Mirror + persist + toast. Idempotent: same-value → no-op.
+pub(in crate::app::dispatch) fn set_custom_model_selected(
+    app: &mut AppView,
+    new: String,
+) -> Vec<Effect> {
+    if app.current_ui.custom_model_selected.as_deref() == Some(&new) {
+        return vec![];
+    }
+    let prev = app.current_ui.custom_model_selected.clone();
+    set_custom_model_selected_inner(app, new.clone());
+    refresh_open_settings_modals(app);
+    tracing::info!(
+        target: "settings",
+        key = "custom_model_selected",
+        "setting changed",
+    );
+    app.show_toast(&format!("\u{2713} Custom model: {new}"));
+    vec![Effect::PersistSetting {
+        key: "custom_model_selected",
+        value: crate::settings::SettingValue::String(new),
+        rollback_value: crate::settings::SettingValue::String(
+            prev.clone().unwrap_or_default(),
+        ),
+    }]
+}
+
+/// Save the custom API config form: persist `[model.<name>]` section to disk,
+/// close the modal, and update the in-memory state.
+///
+/// Called when the user presses **Save** in `EditingCustomApiForm` mode.
+/// Persists the `[model.<name>]` section via
+/// [`save_custom_api_model`] (async, fire-and-forget via `tokio::spawn`)
+/// and dispatches five `Effect::PersistSetting` calls for the `[ui]` flat
+/// fields. Closes the settings modal on save.
+///
+/// After the disk write finishes, sends an ACP `x.ai/internal/reload_models`
+/// request so that the shell agent re-reads `[model.*]` from config.toml
+/// and broadcasts the updated model catalog to the pager — this ensures
+/// the custom model appears in the default-model selector and `/model`
+/// slash command immediately.
+pub(in crate::app::dispatch) fn save_custom_api_config(
+    app: &mut AppView,
+    acp_tx: &xai_acp_lib::AcpAgentTx,
+    base_url: String,
+    api_key: String,
+    api_backend: String,
+    fetch_models: bool,
+    model: String,
+) -> Vec<Effect> {
+    // --- close the settings modal ---
+    if let ActiveView::Agent(id) = app.active_view {
+        if let Some(agent) = app.agents.get_mut(&id) {
+            agent.active_modal = None;
+        }
+    }
+
+    // --- persist [model.<name>] section (fire-and-forget) ---
+    // After the write finishes, send an ACP reload so the shell agent
+    // re-reads config.toml and broadcasts the updated model catalog.
+    {
+        let name = model.clone();
+        let base_url = base_url.clone();
+        let api_key = api_key.clone();
+        let api_backend = api_backend.clone();
+        let acp_tx = acp_tx.clone();
+        tracing::info!(
+            target: "settings",
+            model_name = %name,
+            "DEBUGBOOT: spawning save_custom_api_model"
+        );
+        tokio::spawn(async move {
+            match xai_grok_shell::util::config::save_custom_api_model(
+                &name,
+                &base_url,
+                &api_key,
+                &api_backend,
+            )
+            .await
+            {
+                Ok(()) => {
+                    tracing::info!(
+                        target: "settings",
+                        model_name = %name,
+                        "DEBUGBOOT: save_custom_api_model succeeded"
+                    );
+                    // Disk write finished — now tell the shell agent to
+                    // re-read [model.*] from config.toml so the custom
+                    // model appears in the broadcast catalog.
+                    let params = serde_json::json!({});
+                    let request = agent_client_protocol::ExtRequest::new(
+                        "x.ai/internal/reload_models",
+                        serde_json::value::to_raw_value(&params)
+                            .expect("serialize reload params")
+                            .into(),
+                    );
+                    if let Err(e) = xai_acp_lib::acp_send(request, &acp_tx).await {
+                        tracing::error!(
+                            target: "settings",
+                            error = %e,
+                            "failed to send reload_models ACP request"
+                        );
+                    } else {
+                        tracing::info!(
+                            target: "settings",
+                            "model list reloaded via ACP request after disk write"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        target: "settings",
+                        key = "custom_api_config",
+                        error = %e,
+                        "failed to persist [model.{name}] section",
+                    );
+                }
+            }
+        });
+    }
+
+    // --- inner mutations (state only, no persistence) ---
+    let prev_base_url = app.current_ui.custom_model_base_url.clone();
+    app.current_ui.custom_model_base_url = Some(base_url.clone());
+
+    let prev_api_key = app.current_ui.custom_model_api_key.clone();
+    app.current_ui.custom_model_api_key = Some(api_key.clone());
+
+    let prev_backend = app.current_ui.custom_model_api_backend.clone();
+    app.current_ui.custom_model_api_backend = Some(api_backend.clone());
+
+    let prev_fetch = app.current_ui.custom_model_fetch_models;
+    app.current_ui.custom_model_fetch_models = Some(fetch_models);
+
+    let prev_model = app.current_ui.custom_model_selected.clone();
+    app.current_ui.custom_model_selected = Some(model.clone());
+
+    refresh_open_settings_modals(app);
+
+    tracing::info!(
+        target: "settings",
+        key = "custom_api_config",
+        "custom API config saved via form",
+    );
+
+    app.show_toast(&format!("\u{2713} Custom API config saved"));
+
+    vec![
+        Effect::PersistSetting {
+            key: "custom_model_base_url",
+            value: crate::settings::SettingValue::String(base_url),
+            rollback_value: crate::settings::SettingValue::String(
+                prev_base_url.unwrap_or_default(),
+            ),
+        },
+        Effect::PersistSetting {
+            key: "custom_model_api_key",
+            value: crate::settings::SettingValue::String(api_key),
+            rollback_value: crate::settings::SettingValue::String(
+                prev_api_key.unwrap_or_default(),
+            ),
+        },
+        Effect::PersistSetting {
+            key: "custom_model_api_backend",
+            value: crate::settings::SettingValue::String(api_backend),
+            rollback_value: crate::settings::SettingValue::String(
+                prev_backend.unwrap_or_default(),
+            ),
+        },
+        Effect::PersistSetting {
+            key: "custom_model_fetch_models",
+            value: crate::settings::SettingValue::Bool(fetch_models),
+            rollback_value: crate::settings::SettingValue::Bool(prev_fetch.unwrap_or(false)),
+        },
+        Effect::PersistSetting {
+            key: "custom_model_selected",
+            value: crate::settings::SettingValue::String(model),
+            rollback_value: crate::settings::SettingValue::String(
+                prev_model.unwrap_or_default(),
+            ),
+        },
+    ]
+}

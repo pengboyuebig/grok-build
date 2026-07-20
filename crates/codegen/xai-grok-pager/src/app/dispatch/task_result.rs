@@ -522,6 +522,8 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
             effects
         }
         TaskResult::PromptImagePreviewPrepared => vec![],
+        TaskResult::ReloadModelsComplete => vec![],
+        TaskResult::Nop => vec![],
         TaskResult::AnnouncementsHiddenPersisted { result } => {
             if let Err(e) = result {
                 tracing::warn!("Failed to persist announcements hidden state: {}", e);

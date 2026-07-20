@@ -79,7 +79,9 @@ use super::settings::setters::{
     set_contextual_hint_send_now, set_contextual_hint_small_screen, set_contextual_hint_undo,
     set_contextual_hint_word_select, set_default_model, set_default_selected_permission,
     set_display_refresh_auto_cadence, set_fork_secondary_model, set_group_tool_verbs,
-    set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
+    set_custom_model_api_backend, set_custom_model_api_key, set_custom_model_base_url,
+    set_custom_model_fetch_models, set_custom_model_selected, set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection, set_max_thoughts_width,
+    save_custom_api_config,
     set_multiline_mode, set_prompt_suggestions, set_remember_tool_approvals, set_render_mermaid,
     set_respect_manual_folds, set_scroll_lines, set_scroll_mode, set_scroll_speed,
     set_show_thinking_blocks, set_show_tips, set_simple_mode, set_theme, set_timestamps,
@@ -938,6 +940,15 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::ClearDefaultModel => clear_default_model(app),
         Action::SetForkSecondaryModel(v) => set_fork_secondary_model(app, v),
         Action::ClearForkSecondaryModel => clear_fork_secondary_model(app),
+        Action::SetCustomModelBaseUrl(v) => set_custom_model_base_url(app, v),
+        Action::SetCustomModelApiKey(v) => set_custom_model_api_key(app, v),
+        Action::SetCustomModelApiBackend(v) => set_custom_model_api_backend(app, v),
+        Action::SetCustomModelFetchModels(v) => set_custom_model_fetch_models(app, v),
+        Action::SetCustomModelSelected(v) => set_custom_model_selected(app, v),
+        Action::SaveCustomApiConfig { base_url, api_key, api_backend, fetch_models, model } => {
+            let acp_tx = app.acp_tx.clone();
+            save_custom_api_config(app, &acp_tx, base_url, api_key, api_backend, fetch_models, model)
+        }
         Action::SetMaxThoughtsWidth(v) => set_max_thoughts_width(app, v),
         Action::SetShowTips(v) => set_show_tips(app, v),
         Action::SetAutoUpdate(v) => set_auto_update(app, v),
