@@ -10,6 +10,14 @@ default-run = "grok-desktop"
 name = "grok-desktop"
 path = "src/main.rs"
 
+[features]
+default = []
+tauri-runtime = ["dep:tauri", "dep:tauri-build"]
+
 [dependencies]
 anyhow = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+tauri = { version = "2", features = [], optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }

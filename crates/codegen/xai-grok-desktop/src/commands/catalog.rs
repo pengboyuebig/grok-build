@@ -1,5 +1,22 @@
+use serde::Serialize;
+
 use crate::domain::command_catalog::DesktopCommand;
 
-pub fn get_command_catalog(commands: Vec<DesktopCommand>) -> Vec<DesktopCommand> {
-    commands
+#[derive(Serialize)]
+pub struct CommandCatalog {
+    pub commands: Vec<DesktopCommand>,
+}
+
+#[tauri::command]
+pub fn get_command_catalog() -> CommandCatalog {
+    CommandCatalog {
+        commands: vec![
+            DesktopCommand::from_slash("/rename", true, true),
+            DesktopCommand::from_slash("/model", true, true),
+            DesktopCommand::from_slash("/effort", true, true),
+            DesktopCommand::from_slash("/new", false, false),
+            DesktopCommand::from_slash("/clear", false, false),
+            DesktopCommand::from_slash("/quit", false, false),
+        ],
+    }
 }

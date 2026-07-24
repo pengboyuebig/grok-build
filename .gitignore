@@ -5,3 +5,8 @@
 .worktrees/
 node_modules/
 dist/
+
+# Tauri generated assets for xai-grok-desktop.
+crates/codegen/xai-grok-desktop/gen/
+# Copied terminal companion binary for Tauri bundling.
+crates/codegen/xai-grok-desktop/bin/

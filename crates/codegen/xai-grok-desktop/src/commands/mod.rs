@@ -1,5 +1,8 @@
+#[cfg(feature = "tauri-runtime")]
 pub mod catalog;
+#[cfg(feature = "tauri-runtime")]
 pub mod chat;
+#[cfg(feature = "tauri-runtime")]
 pub mod terminal;
 
 pub const DESKTOP_INVOKE_COMMANDS: [&str; 8] = [
