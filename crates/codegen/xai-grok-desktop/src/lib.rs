@@ -1,3 +1,5 @@
+pub mod domain;
+
 pub const PRODUCT_NAME: &str = "Grok Desktop";
 pub const BINARY_NAME: &str = "grok-desktop";
 
