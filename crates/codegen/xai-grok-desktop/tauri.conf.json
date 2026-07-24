@@ -1,10 +1,10 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Grok Desktop",
-  "version": "0.1.0",
+  "version": "0.1.220-alpha.4",
   "identifier": "ai.grok.desktop",
   "build": {
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "npm --prefix ui run build",
     "frontendDist": "ui/dist"
   },
   "app": {

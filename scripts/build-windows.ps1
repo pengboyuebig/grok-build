@@ -9,7 +9,11 @@ $desktopManifest = Join-Path $workspaceRoot 'crates\codegen\xai-grok-desktop\Car
 
 function Get-TargetTriple {
     $output = rustc -vV | Select-String '^host:'
-    return ($output -split ':\s+')[1].Trim()
+    $triple = ($output -split ':\s+')[1].Trim()
+    if (-not $triple.EndsWith('-msvc')) {
+        throw "Tauri on Windows requires an MSVC host toolchain (x86_64-pc-windows-msvc or aarch64-pc-windows-msvc); current host is $triple"
+    }
+    return $triple
 }
 
 Push-Location $workspaceRoot
