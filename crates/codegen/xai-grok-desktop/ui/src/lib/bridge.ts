@@ -45,6 +45,17 @@ export async function sendMessage(sessionId: string, message: string): Promise<v
   await invoke('send_message', { sessionId, message });
 }
 
+export type TerminalLaunchRequest = {
+  cwd: string;
+  model: string;
+  effort: 'low' | 'medium' | 'high' | 'xhigh';
+  permissionMode: 'ask' | 'auto' | 'always_approve';
+};
+
+export async function launchTerminalSession(request: TerminalLaunchRequest): Promise<void> {
+  await invoke('launch_terminal_session', { request });
+}
+
 export async function listenToChatEvents(handler: (event: ChatEvent) => void): Promise<() => void> {
   return listen<unknown>('chat:event', (event) => handler(chatEventSchema.parse(event.payload)));
 }

@@ -6,9 +6,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
-function App() {
-  return <main className="min-h-screen bg-slate-950 p-8 text-slate-100">Grok Desktop</main>;
-}
+import { App } from './App';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
