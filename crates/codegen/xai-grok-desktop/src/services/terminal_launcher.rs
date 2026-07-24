@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use crate::domain::terminal_launch::{LaunchRequest, PermissionMode, TerminalLaunchSpec};
 
 pub fn build_launch_spec(request: LaunchRequest) -> Result<TerminalLaunchSpec> {
-    let cwd = std::fs::canonicalize(&request.cwd)
+    let cwd = dunce::canonicalize(&request.cwd)
         .with_context(|| format!("工作目录不存在或无法访问：{}", request.cwd.display()))?;
     if !cwd.is_dir() {
         bail!("工作目录不是文件夹：{}", cwd.display());

@@ -16,6 +16,7 @@ tauri-runtime = ["dep:tauri", "dep:tauri-build"]
 
 [dependencies]
 anyhow = { workspace = true }
+dunce = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 tauri = { version = "2", features = [], optional = true }
 

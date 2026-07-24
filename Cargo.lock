@@ -14974,6 +14974,7 @@ name = "xai-grok-desktop"
 version = "0.1.220-alpha.4"
 dependencies = [
  "anyhow",
+ "dunce",
  "serde",
  "tauri",
  "tauri-build",
