@@ -6,11 +6,19 @@
 import { useEffect, useState } from 'react';
 
 import { ActivityPanel } from './features/activity/ActivityPanel';
+import { ApprovalDialog } from './features/approvals/ApprovalDialog';
 import { ChatWorkspace } from './features/chat/ChatWorkspace';
 import { CommandMenu } from './features/commands/CommandMenu';
 import { SessionList } from './features/sessions/SessionList';
 import { WorkspacePicker } from './features/workspace/WorkspacePicker';
-import { getCommandCatalog, launchTerminalSession, type CommandCatalog, type TerminalLaunchRequest } from './lib/bridge';
+import {
+  getCommandCatalog,
+  launchTerminalSession,
+  listenToChatEvents,
+  respondToApproval,
+  type CommandCatalog,
+  type TerminalLaunchRequest,
+} from './lib/bridge';
 
 const DEFAULT_CWD = 'C:/work/demo';
 
@@ -22,10 +30,32 @@ export function App() {
   const [effort, setEffort] = useState<TerminalLaunchRequest['effort']>('medium');
   const [permissionMode, setPermissionMode] = useState<TerminalLaunchRequest['permissionMode']>('ask');
   const [activities, setActivities] = useState<Array<{ id: string; label: string; detail: string }>>([]);
+  const [approval, setApproval] = useState<{ id: string; description: string }>();
 
   useEffect(() => {
     void getCommandCatalog().then(setCatalog).catch(() => setActivities([{ id: 'catalog-error', label: '菜单加载失败', detail: '请检查桌面服务是否运行。' }]));
   }, []);
+
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listenToChatEvents((event) => {
+      if (event.kind === 'approval_requested' && event.approval_id) {
+        setApproval({ id: event.approval_id, description: event.text ?? '工具请求执行操作' });
+      }
+    }).then((cleanup) => {
+      unlisten = cleanup;
+    });
+    return () => unlisten?.();
+  }, []);
+
+  async function handleApproval(approvalId: string, approved: boolean) {
+    await respondToApproval(approvalId, approved);
+    setApproval(undefined);
+    setActivities((current) => [
+      { id: crypto.randomUUID(), label: approved ? '工具操作已允许' : '工具操作已拒绝', detail: approvalId },
+      ...current,
+    ]);
+  }
 
   async function openTerminalSession() {
     const request = { cwd, model, effort, permissionMode };
@@ -87,7 +117,10 @@ export function App() {
         <CommandMenu commands={catalog.commands} onDispatch={(slash, value) => setActivities((current) => [{ id: crypto.randomUUID(), label: slash, detail: value ?? '已请求执行' }, ...current])} />
       </aside>
       <ChatWorkspace sessionId={activeSessionId} />
-      <ActivityPanel items={activities} />
+      <div className="flex min-h-0 flex-col">
+        {approval ? <ApprovalDialog onRespond={(id, approved) => void handleApproval(id, approved)} request={approval} /> : null}
+        <ActivityPanel items={activities} />
+      </div>
     </main>
   );
 }

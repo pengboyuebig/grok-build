@@ -27,7 +27,8 @@ const catalogSchema = z.object({
 export type CommandCatalog = z.infer<typeof catalogSchema>;
 
 const chatEventSchema = z.object({
-  kind: z.enum(['assistant_delta', 'assistant_final', 'error']),
+  kind: z.enum(['assistant_delta', 'assistant_final', 'approval_requested', 'error']),
+  approval_id: z.string().min(1).optional(),
   text: z.string().optional(),
 });
 
@@ -43,6 +44,10 @@ export async function getCommandCatalog(): Promise<CommandCatalog> {
 
 export async function sendMessage(sessionId: string, message: string): Promise<void> {
   await invoke('send_message', { sessionId, message });
+}
+
+export async function respondToApproval(approvalId: string, approved: boolean): Promise<void> {
+  await invoke('respond_to_approval', { approvalId, approved });
 }
 
 export type TerminalLaunchRequest = {
