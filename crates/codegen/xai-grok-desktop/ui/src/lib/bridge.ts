@@ -42,6 +42,10 @@ export async function getCommandCatalog(): Promise<CommandCatalog> {
   return validateCatalog(await invoke<unknown>('get_command_catalog'));
 }
 
+export async function startSession(cwd: string): Promise<string> {
+  return invoke<string>('start_session', { cwd });
+}
+
 export async function sendMessage(sessionId: string, message: string): Promise<void> {
   await invoke('send_message', { sessionId, message });
 }

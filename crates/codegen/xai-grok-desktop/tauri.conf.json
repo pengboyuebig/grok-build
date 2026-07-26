@@ -24,6 +24,6 @@
   "bundle": {
     "active": true,
     "targets": "nsis",
-    "externalBin": ["xai-grok-pager"]
+    "externalBin": ["bin/xai-grok-pager"]
   }
 }

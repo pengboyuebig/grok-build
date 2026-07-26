@@ -5,6 +5,8 @@
 .worktrees/
 node_modules/
 dist/
+test-results/
+playwright-report/
 
 # Tauri generated assets for xai-grok-desktop.
 crates/codegen/xai-grok-desktop/gen/

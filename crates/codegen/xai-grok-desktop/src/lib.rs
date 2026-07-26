@@ -8,6 +8,7 @@ pub const BINARY_NAME: &str = "grok-desktop";
 #[cfg(feature = "tauri-runtime")]
 pub fn run() -> anyhow::Result<()> {
     tauri::Builder::default()
+        .manage(commands::chat::DesktopSessionState::default())
         .invoke_handler(tauri::generate_handler![
             commands::catalog::get_command_catalog,
             commands::chat::start_session,

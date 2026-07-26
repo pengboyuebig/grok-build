@@ -16,14 +16,16 @@ import {
   launchTerminalSession,
   listenToChatEvents,
   respondToApproval,
+  sendMessage,
+  startSession,
   type CommandCatalog,
   type TerminalLaunchRequest,
 } from './lib/bridge';
 
-const DEFAULT_CWD = 'C:/work/demo';
+const DEFAULT_CWD = '.';
 
 export function App() {
-  const [activeSessionId, setActiveSessionId] = useState('s1');
+  const [activeSessionId, setActiveSessionId] = useState<string>();
   const [catalog, setCatalog] = useState<CommandCatalog>({ commands: [] });
   const [cwd, setCwd] = useState(DEFAULT_CWD);
   const [model, setModel] = useState('grok-build');
@@ -33,7 +35,18 @@ export function App() {
   const [approval, setApproval] = useState<{ id: string; description: string }>();
 
   useEffect(() => {
-    void getCommandCatalog().then(setCatalog).catch(() => setActivities([{ id: 'catalog-error', label: '菜单加载失败', detail: '请检查桌面服务是否运行。' }]));
+    void getCommandCatalog()
+      .then(setCatalog)
+      .catch(() => setActivities([{ id: 'catalog-error', label: '菜单加载失败', detail: '请检查桌面服务是否运行。' }]));
+  }, []);
+
+  useEffect(() => {
+    void startSession(cwd)
+      .then(setActiveSessionId)
+      .catch(() => setActivities((current) => [
+        { id: 'session-error', label: '会话创建失败', detail: '请检查本地认证和桌面服务状态。' },
+        ...current,
+      ]));
   }, []);
 
   useEffect(() => {
@@ -61,7 +74,19 @@ export function App() {
     const request = { cwd, model, effort, permissionMode };
     await launchTerminalSession(request);
     setActivities((current) => [
-      { id: crypto.randomUUID(), label: '终端会话已启动', detail: `${model} · ${cwd}` },
+      { id: crypto.randomUUID(), label: '终端会话已启动', detail: `${model} - ${cwd}` },
+      ...current,
+    ]);
+  }
+
+  async function dispatchCommand(slash: string, value?: string) {
+    if (!activeSessionId) {
+      return;
+    }
+    const prompt = value ? `${slash} ${value}` : slash;
+    await sendMessage(activeSessionId, prompt);
+    setActivities((current) => [
+      { id: crypto.randomUUID(), label: slash, detail: value ?? '已发送到当前会话' },
       ...current,
     ]);
   }
@@ -73,25 +98,15 @@ export function App() {
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyan-400">Grok Desktop</p>
           <h1 className="mt-2 text-lg font-semibold">AI 编码工作台</h1>
         </div>
-        <SessionList activeId={activeSessionId} onSelect={setActiveSessionId} sessions={[{ id: 's1', title: '当前会话' }]} />
+        <SessionList activeId={activeSessionId ?? ''} onSelect={setActiveSessionId} sessions={activeSessionId ? [{ id: activeSessionId, title: '当前会话' }] : []} />
         <WorkspacePicker cwd={cwd} onChange={setCwd} />
         <label className="block text-xs text-slate-400" htmlFor="model-select">
           模型
-          <input
-            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
-            id="model-select"
-            onChange={(event) => setModel(event.target.value)}
-            value={model}
-          />
+          <input className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" id="model-select" onChange={(event) => setModel(event.target.value)} value={model} />
         </label>
         <label className="block text-xs text-slate-400" htmlFor="effort-select">
           推理强度
-          <select
-            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
-            id="effort-select"
-            onChange={(event) => setEffort(event.target.value as TerminalLaunchRequest['effort'])}
-            value={effort}
-          >
+          <select className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" id="effort-select" onChange={(event) => setEffort(event.target.value as TerminalLaunchRequest['effort'])} value={effort}>
             <option value="low">低</option>
             <option value="medium">中</option>
             <option value="high">高</option>
@@ -100,12 +115,7 @@ export function App() {
         </label>
         <label className="block text-xs text-slate-400" htmlFor="permission-select">
           权限模式
-          <select
-            className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
-            id="permission-select"
-            onChange={(event) => setPermissionMode(event.target.value as TerminalLaunchRequest['permissionMode'])}
-            value={permissionMode}
-          >
+          <select className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100" id="permission-select" onChange={(event) => setPermissionMode(event.target.value as TerminalLaunchRequest['permissionMode'])} value={permissionMode}>
             <option value="ask">每次询问</option>
             <option value="auto">自动</option>
             <option value="always_approve">始终允许</option>
@@ -114,9 +124,9 @@ export function App() {
         <button className="w-full rounded-xl bg-cyan-500 px-4 py-3 text-sm font-semibold text-slate-950" onClick={() => void openTerminalSession()} type="button">
           打开终端会话
         </button>
-        <CommandMenu commands={catalog.commands} onDispatch={(slash, value) => setActivities((current) => [{ id: crypto.randomUUID(), label: slash, detail: value ?? '已请求执行' }, ...current])} />
+        <CommandMenu commands={catalog.commands} onDispatch={(slash, value) => void dispatchCommand(slash, value)} />
       </aside>
-      <ChatWorkspace sessionId={activeSessionId} />
+      {activeSessionId ? <ChatWorkspace sessionId={activeSessionId} /> : <section className="flex min-h-0 flex-1 bg-slate-950" />}
       <div className="flex min-h-0 flex-col">
         {approval ? <ApprovalDialog onRespond={(id, approved) => void handleApproval(id, approved)} request={approval} /> : null}
         <ActivityPanel items={activities} />
