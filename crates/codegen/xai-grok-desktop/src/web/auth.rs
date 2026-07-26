@@ -1,7 +1,3 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static TOKEN_COUNTER: AtomicU64 = AtomicU64::new(1);
-
 #[derive(Debug, Clone)]
 pub struct LocalAuth {
     token: String,
@@ -9,9 +5,16 @@ pub struct LocalAuth {
 }
 
 impl LocalAuth {
+    #[cfg(feature = "web-runtime")]
     pub fn new(port: u16) -> Self {
-        let counter = TOKEN_COUNTER.fetch_add(1, Ordering::Relaxed);
-        Self::new_for_test(format!("{counter:032x}"), port)
+        use rand::{Rng, distr::Alphanumeric};
+
+        let token = rand::rng()
+            .sample_iter(Alphanumeric)
+            .take(43)
+            .map(char::from)
+            .collect::<String>();
+        Self::new_for_test(token, port)
     }
 
     pub fn new_for_test(token: impl Into<String>, port: u16) -> Self {
@@ -23,6 +26,10 @@ impl LocalAuth {
 
     pub fn token(&self) -> &str {
         &self.token
+    }
+
+    pub fn origin(&self) -> &str {
+        &self.origin
     }
 
     pub fn authorizes(&self, token: Option<&str>, origin: Option<&str>) -> bool {
