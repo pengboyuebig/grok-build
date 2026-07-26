@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod domain;
 pub mod services;
+pub mod web;
 
 pub const PRODUCT_NAME: &str = "Grok Desktop";
 pub const BINARY_NAME: &str = "grok-desktop";
