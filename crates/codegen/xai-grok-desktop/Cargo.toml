@@ -1,0 +1,29 @@
+[package]
+name = "xai-grok-desktop"
+version = "0.1.220-alpha.4"
+edition.workspace = true
+license = "Apache-2.0"
+authors = ["xAI"]
+default-run = "grok-desktop"
+
+[[bin]]
+name = "grok-desktop"
+path = "src/main.rs"
+
+[features]
+default = []
+tauri-runtime = ["dep:tauri", "dep:tauri-build", "dep:tokio", "dep:tokio-util", "dep:xai-acp-lib", "dep:xai-grok-shell", "dep:agent-client-protocol"]
+
+[dependencies]
+anyhow = { workspace = true }
+dunce = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["rt", "sync"], optional = true }
+tokio-util = { workspace = true, optional = true }
+xai-acp-lib = { workspace = true, optional = true }
+xai-grok-shell = { workspace = true, optional = true }
+agent-client-protocol = { workspace = true, optional = true }
+tauri = { version = "2", features = [], optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
