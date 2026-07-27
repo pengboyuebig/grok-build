@@ -17,14 +17,16 @@ required-features = ["web-runtime"]
 
 [features]
 default = []
-tauri-runtime = ["dep:tauri", "dep:tauri-build", "dep:tokio", "dep:tokio-util", "dep:xai-acp-lib", "dep:xai-grok-shell", "dep:agent-client-protocol"]
-web-runtime = ["dep:axum", "dep:rand", "dep:serde_json", "dep:tokio", "dep:tower-http"]
+agent-runtime = ["dep:tokio", "dep:tokio-util", "dep:xai-acp-lib", "dep:xai-grok-shell", "dep:agent-client-protocol"]
+tauri-runtime = ["agent-runtime", "dep:tauri", "dep:tauri-build"]
+web-runtime = ["agent-runtime", "dep:axum", "dep:futures-util", "dep:rand", "dep:serde_json", "dep:tower-http"]
 
 [dependencies]
 anyhow = { workspace = true }
 dunce = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 axum = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt", "sync"], optional = true }

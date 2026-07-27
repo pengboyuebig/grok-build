@@ -1,4 +1,4 @@
-#![cfg(feature = "tauri-runtime")]
+#![cfg(feature = "agent-runtime")]
 
 use std::{
     collections::HashMap,
@@ -12,7 +12,6 @@ use std::{
 };
 
 use agent_client_protocol as acp;
-use tauri::{AppHandle, Emitter};
 use tokio::sync::{Mutex, oneshot};
 use tokio_util::sync::CancellationToken;
 use xai_acp_lib::{
@@ -31,18 +30,19 @@ type PendingApproval = (
     Vec<acp::PermissionOption>,
     oneshot::Sender<AcpResult<acp::RequestPermissionResponse>>,
 );
+type EventSink = Arc<dyn Fn(FrontendEvent) + Send + Sync>;
 
 /// A live ACP client shared by the desktop command handlers.
 pub struct LiveAgent {
     tx: AcpAgentTx,
-    app: AppHandle,
+    emit_event: EventSink,
     pending_approvals: Arc<Mutex<HashMap<String, PendingApproval>>>,
     approval_counter: AtomicU64,
     _cancel: CancellationToken,
 }
 
 impl LiveAgent {
-    pub async fn connect(app: AppHandle) -> anyhow::Result<Arc<Self>> {
+    pub async fn connect(emit_event: EventSink) -> anyhow::Result<Arc<Self>> {
         let raw_config = xai_grok_shell::config::load_effective_config()
             .map_err(|error| anyhow::anyhow!("failed to load Grok config: {error}"))?;
         let agent_config = AgentConfig::new_from_toml_cfg(&raw_config)
@@ -69,7 +69,7 @@ impl LiveAgent {
 
         let agent = Arc::new(Self {
             tx,
-            app,
+            emit_event,
             pending_approvals: Arc::new(Mutex::new(HashMap::new())),
             approval_counter: AtomicU64::new(1),
             _cancel: cancel,
@@ -96,18 +96,15 @@ impl LiveAgent {
             vec![acp::ContentBlock::Text(acp::TextContent::new(message))],
         );
         let tx = self.tx.clone();
-        let app = self.app.clone();
+        let emit_event = Arc::clone(&self.emit_event);
         tokio::spawn(async move {
             if let Err(error) = acp_send::<_, _>(request, &tx).await {
-                let _ = app.emit(
-                    "chat:event",
-                    FrontendEvent {
-                        kind: FrontendEventKind::Error,
-                        text: Some(error.to_string()),
-                        approval_id: None,
-                        approved: false,
-                    },
-                );
+                emit_event(FrontendEvent {
+                    kind: FrontendEventKind::Error,
+                    text: Some(error.to_string()),
+                    approval_id: None,
+                    approved: false,
+                });
             }
         });
         Ok(())
@@ -225,15 +222,12 @@ impl LiveAgent {
     }
 
     fn emit(&self, kind: FrontendEventKind, text: Option<String>, approval_id: Option<String>) {
-        let _ = self.app.emit(
-            "chat:event",
-            FrontendEvent {
-                kind,
-                text,
-                approval_id,
-                approved: false,
-            },
-        );
+        (self.emit_event)(FrontendEvent {
+            kind,
+            text,
+            approval_id,
+            approved: false,
+        });
     }
 }
 

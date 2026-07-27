@@ -21,6 +21,12 @@ export default defineConfig({
     {
       name: 'desktop',
       use: { ...devices['Desktop Chrome'] },
+      testMatch: 'desktop.spec.ts',
+    },
+    {
+      name: 'web',
+      use: { ...devices['Desktop Chrome'] },
+      testMatch: 'web.spec.ts',
     },
   ],
 });

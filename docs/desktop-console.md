@@ -2,6 +2,8 @@
 
 Grok Desktop is the graphical AI coding client. The existing `xai-grok-pager.exe` terminal UI remains a separate product.
 
+For a browser-hosted local control surface, see `docs/browser-console.md`.
+
 ## Windows build targets
 
 Run from the repository root:

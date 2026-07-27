@@ -1,4 +1,3 @@
-#[cfg(feature = "tauri-runtime")]
 pub mod catalog;
 #[cfg(feature = "tauri-runtime")]
 pub mod chat;

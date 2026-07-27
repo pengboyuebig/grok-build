@@ -7,8 +7,12 @@ pub struct CommandCatalog {
     pub commands: Vec<DesktopCommand>,
 }
 
-#[tauri::command]
+#[cfg_attr(feature = "tauri-runtime", tauri::command)]
 pub fn get_command_catalog() -> CommandCatalog {
+    command_catalog()
+}
+
+pub fn command_catalog() -> CommandCatalog {
     CommandCatalog {
         commands: vec![
             DesktopCommand::from_slash("/rename", true, true),

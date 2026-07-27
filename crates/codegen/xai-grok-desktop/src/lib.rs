@@ -8,8 +8,24 @@ pub const BINARY_NAME: &str = "grok-desktop";
 
 #[cfg(feature = "tauri-runtime")]
 pub fn run() -> anyhow::Result<()> {
+    use std::sync::Arc;
+
+    use tauri::Emitter;
+
+    let sessions = Arc::new(commands::chat::DesktopSessionState::default());
+    let event_sessions = Arc::clone(&sessions);
     tauri::Builder::default()
-        .manage(commands::chat::DesktopSessionState::default())
+        .manage(sessions)
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            let mut events = event_sessions.subscribe_events();
+            tauri::async_runtime::spawn(async move {
+                while let Ok(event) = events.recv().await {
+                    let _ = handle.emit("chat:event", event);
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::catalog::get_command_catalog,
             commands::chat::start_session,

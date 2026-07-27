@@ -5,66 +5,52 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { z } from 'zod';
+import { createWebBridge } from './webBridge';
+import { chatEventSchema, validateCatalog, type ChatEvent, type CommandCatalog, type TerminalLaunchRequest } from './contracts';
 
-const commandSchema = z.object({
-  slash: z.string().regex(/^\/[a-z0-9-]+$/),
-  kind: z.enum(['action', 'form', 'prompt_dispatch']),
-  requires_confirmation: z.boolean(),
-  can_spawn_process: z.literal(false),
-  arguments: z.array(
-    z.object({
-      name: z.string().min(1),
-      required: z.boolean(),
-    }),
-  ),
-});
+export { validateCatalog, type ChatEvent, type CommandCatalog, type TerminalLaunchRequest } from './contracts';
 
-const catalogSchema = z.object({
-  commands: z.array(commandSchema),
-});
+const isTauri = '__TAURI_INTERNALS__' in window;
+let webBridge: ReturnType<typeof createWebBridge> | undefined;
 
-export type CommandCatalog = z.infer<typeof catalogSchema>;
-
-const chatEventSchema = z.object({
-  kind: z.enum(['assistant_delta', 'assistant_final', 'approval_requested', 'error']),
-  approval_id: z.string().min(1).optional(),
-  text: z.string().optional(),
-});
-
-export type ChatEvent = z.infer<typeof chatEventSchema>;
-
-export function validateCatalog(input: unknown): CommandCatalog {
-  return catalogSchema.parse(input);
+function browserBridge() {
+  if (isTauri) return undefined;
+  webBridge ??= createWebBridge();
+  return webBridge;
 }
 
 export async function getCommandCatalog(): Promise<CommandCatalog> {
+  const web = browserBridge();
+  if (web) return web.getCommandCatalog();
   return validateCatalog(await invoke<unknown>('get_command_catalog'));
 }
 
 export async function startSession(cwd: string): Promise<string> {
+  const web = browserBridge();
+  if (web) return web.startSession(cwd);
   return invoke<string>('start_session', { cwd });
 }
 
 export async function sendMessage(sessionId: string, message: string): Promise<void> {
+  const web = browserBridge();
+  if (web) return web.sendMessage(sessionId, message);
   await invoke('send_message', { sessionId, message });
 }
 
 export async function respondToApproval(approvalId: string, approved: boolean): Promise<void> {
+  const web = browserBridge();
+  if (web) return web.respondToApproval(approvalId, approved);
   await invoke('respond_to_approval', { approvalId, approved });
 }
 
-export type TerminalLaunchRequest = {
-  cwd: string;
-  model: string;
-  effort: 'low' | 'medium' | 'high' | 'xhigh';
-  permissionMode: 'ask' | 'auto' | 'always_approve';
-};
-
 export async function launchTerminalSession(request: TerminalLaunchRequest): Promise<void> {
+  const web = browserBridge();
+  if (web) return web.launchTerminalSession(request);
   await invoke('launch_terminal_session', { request });
 }
 
 export async function listenToChatEvents(handler: (event: ChatEvent) => void): Promise<() => void> {
+  const web = browserBridge();
+  if (web) return web.listenToChatEvents(handler);
   return listen<unknown>('chat:event', (event) => handler(chatEventSchema.parse(event.payload)));
 }
