@@ -1,3 +1,9 @@
 /target
 **/*.rs.bk
 .DS_Store
+
+bin/protoc-dist/
+bin/include/
+bin/protoc-win64.zip
+bin/protoc.exe
+crates/codegen/xai-grok-tools-api/NUL
