@@ -98,6 +98,8 @@ pub enum SettingsModalMode {
     EditingValue {
         key: SettingKey,
     },
+    PickingCustomModelConfig {},
+    EditingCustomApiForm {},
 }
 
 #[derive(Debug)]
