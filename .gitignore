@@ -7,3 +7,6 @@ bin/include/
 bin/protoc-win64.zip
 bin/protoc.exe
 crates/codegen/xai-grok-tools-api/NUL
+/node_modules
+node_modules
+dist/

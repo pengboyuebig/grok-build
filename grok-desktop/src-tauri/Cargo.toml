@@ -1,0 +1,17 @@
+[package]
+name = "grok-desktop"
+version = "0.1.0"
+edition = "2021"
+
+# Keep the desktop shell independent from the generated parent Rust workspace.
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+rand = "0.8"
