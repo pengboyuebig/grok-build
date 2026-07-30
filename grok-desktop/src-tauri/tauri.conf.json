@@ -5,5 +5,13 @@
   "identifier": "com.local.grok-desktop",
   "build": { "frontendDist": "../dist", "devUrl": "http://127.0.0.1:1420", "beforeDevCommand": "npm run dev", "beforeBuildCommand": "npm run build" },
   "app": { "windows": [{ "title": "Grok Desktop", "width": 1440, "height": 900, "minWidth": 1024, "minHeight": 680 }], "security": { "csp": "default-src 'self'; connect-src 'self' ws://127.0.0.1:*; style-src 'self' 'unsafe-inline'" } },
-  "bundle": { "active": true, "targets": "nsis", "resources": ["resources/grok.exe"], "windows": { "webviewInstallMode": { "type": "embedBootstrapper" } } }
+  "bundle": {
+    "active": true,
+    "targets": "nsis",
+    "resources": {
+      "resources/grok.exe": "resources/grok.exe",
+      "WebView2Loader.dll": "./"
+    },
+    "windows": { "webviewInstallMode": { "type": "embedBootstrapper" } }
+  }
 }

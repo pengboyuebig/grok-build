@@ -17,3 +17,4 @@ grok-desktop/src-tauri/target
 grok-desktop/src-tauri/target/**
 /grok-desktop/src-tauri/target/**
 /grok-desktop/src-tauri/resources/
+/grok-desktop/release/
