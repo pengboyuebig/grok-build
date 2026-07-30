@@ -1,20 +1,24 @@
+# Build outputs
 /target
-**/*.rs.bk
-.DS_Store
-
-bin/protoc-dist/
-bin/include/
-bin/protoc-win64.zip
-bin/protoc.exe
-crates/codegen/xai-grok-tools-api/NUL
-/node_modules
-node_modules
+**/target/**
 dist/
 resources/
-resources
-grok-desktop/src-tauri/resources
-grok-desktop/src-tauri/target
-grok-desktop/src-tauri/target/**
-/grok-desktop/src-tauri/target/**
-/grok-desktop/src-tauri/resources/
-/grok-desktop/release/
+.grok/
+
+# Node / frontend
+node_modules/
+
+# Bin artifacts (hermetic tools)
+bin/protoc-dist/
+bin/include/
+bin/protoc.exe
+bin/protoc-win64.zip
+
+# IDE / OS
+.DS_Store
+**/*.rs.bk
+
+# Project-specific
+crates/codegen/xai-grok-tools-api/NUL
+grok-desktop/src-tauri/resources/
+grok-desktop/release/
