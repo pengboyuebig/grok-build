@@ -323,7 +323,7 @@ impl SessionRegistryClient {
     }
 
     /// GET /v1/sessions/{id}/download — returns a signed GCS URL without downloading.
-    pub async fn get_download_url(
+    pub(crate) async fn get_download_url(
         &self,
         session_id: &str,
         file: &str,
@@ -459,6 +459,23 @@ mod tests {
         assert!(json.get("lastTurnNumber").is_none());
         assert!(json.get("restorableTurnNumber").is_none());
         assert!(json.get("repoHeadAtEnd").is_none());
+    }
+
+    #[test]
+    fn empty_summary_is_sent_not_omitted() {
+        let req = UpdateRequest {
+            summary: Some(String::new()),
+            first_prompt: None,
+            last_turn_number: None,
+            repo_head_at_end: None,
+            restorable_turn_number: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            json.get("summary"),
+            Some(&serde_json::json!("")),
+            "unpin must POST summary:\"\" so a merge replica drops the prior title"
+        );
     }
 
     // Wire-contract tests: server reads the camelCase `deviceId` key.

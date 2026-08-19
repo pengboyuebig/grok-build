@@ -105,6 +105,8 @@ async fn leader_soak_churning_clients_no_leaks_no_zombies() {
     let server = xai_grok_test_support::MockInferenceServer::start()
         .await
         .unwrap();
+    // Measure the leader, not the harness's copy of every conversation.
+    server.set_keep_requests(false);
     let grok_home = TempDir::new().unwrap();
     let workdir = TempDir::new().unwrap();
 
@@ -207,8 +209,6 @@ async fn leader_soak_churning_clients_no_leaks_no_zombies() {
             let mut turns: u64 = 0;
             let mut baseline: Option<serde_json::Value> = None;
 
-            // Each cycle: 10 fresh clients, 2 sessions each, one scripted
-            // turn per session, then all disconnect.
             while tokio::time::Instant::now() < soak_deadline {
                 cycles += 1;
                 let mut clients = Vec::new();
@@ -282,7 +282,7 @@ async fn leader_soak_churning_clients_no_leaks_no_zombies() {
                 }
 
                 // An entry that never drains names itself here, one cycle
-                // after it leaks, while memory is still within its budget.
+                // after it leaks.
                 let counts = registry_counts(&mut bootstrap, 1000 + cycles).await;
                 assert_eq!(
                     counts["sessions"], 0,
@@ -332,7 +332,7 @@ async fn leader_soak_churning_clients_no_leaks_no_zombies() {
                      ({:.2} MB per cycle)",
                     net_bytes as f64 / measured as f64 / (1024.0 * 1024.0)
                 );
-                let max_per_cycle = env_u64("LEADER_SOAK_MAX_HEAP_BYTES_PER_CYCLE", 4 << 20) as i64;
+                let max_per_cycle = env_u64("LEADER_SOAK_MAX_HEAP_BYTES_PER_CYCLE", 1 << 20) as i64;
                 assert!(
                     per_cycle <= max_per_cycle,
                     "leader retained {per_cycle} heap bytes per cycle (bound {max_per_cycle})"
@@ -384,15 +384,19 @@ async fn leader_soak_churning_clients_no_leaks_no_zombies() {
             }
 
             // A missing sample means the probe failed, which would silently
-            // retire the nightly budget. Threads are Linux-only.
+            // retire the nightly budget. macOS samples threads too now, but
+            // the bound is tuned against Linux nightlies, so a macOS run
+            // logs the growth without enforcing it.
             match growth.threads {
                 Some(thread_growth) => {
                     eprintln!("[soak] threads: growth {thread_growth}");
-                    assert!(
-                        thread_growth <= max_thread_growth,
-                        "leader threads grew by {thread_growth} over the soak \
-                         (bound {max_thread_growth})"
-                    );
+                    if cfg!(target_os = "linux") {
+                        assert!(
+                            thread_growth <= max_thread_growth,
+                            "leader threads grew by {thread_growth} over the soak \
+                             (bound {max_thread_growth})"
+                        );
+                    }
                 }
                 None if cfg!(target_os = "linux") => {
                     panic!("thread growth sample unavailable; the soak cannot bound it")

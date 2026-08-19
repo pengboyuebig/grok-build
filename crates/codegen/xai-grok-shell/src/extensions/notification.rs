@@ -35,6 +35,21 @@ pub struct WorkflowAgentInfo {
     pub duration_ms: u64,
 }
 
+/// `_meta` key on rename fan-out (`SessionSummaryGenerated` + ACP
+/// `SessionInfoUpdate`). Old clients ignore unknown meta.
+pub const TITLE_IS_MANUAL_META_KEY: &str = "x.ai/titleIsManual";
+
+/// `_meta` object carried on a manual-rename fan-out.
+pub fn title_is_manual_meta() -> serde_json::Value {
+    serde_json::json!({ TITLE_IS_MANUAL_META_KEY: true })
+}
+
+/// `_meta` object carried on `/rename --auto` fan-out. Distinct from
+/// *absent* meta (auto title — must not clobber `display_name`).
+pub fn title_is_unpinned_meta() -> serde_json::Value {
+    serde_json::json!({ TITLE_IS_MANUAL_META_KEY: false })
+}
+
 /// xAI-specific session notification (parallel to acp::SessionNotification)
 /// This wraps an XaiSessionUpdate with session context for persistence and replay.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -92,7 +107,7 @@ impl PromptUsage {
     /// Project a ledger snapshot for the wire. Returns `Some` whenever
     /// `incomplete` is set — even if `ledger` is `None` — so the flag is never
     /// dropped by omission. Always scrubs untrustworthy costs.
-    pub fn project_from_ledger(
+    pub(crate) fn project_from_ledger(
         ledger: Option<&xai_chat_state::UsageLedger>,
         incomplete: bool,
     ) -> Option<Self> {
@@ -116,7 +131,7 @@ impl PromptUsage {
 
     /// Error-path attach: any open ledger is always incomplete (may under-count
     /// without a freeze drain). `may_undercount` only matters when the ledger is empty.
-    pub fn for_error_path(
+    pub(crate) fn for_error_path(
         ledger: Option<&xai_chat_state::UsageLedger>,
         may_undercount: bool,
     ) -> Option<Self> {
@@ -129,7 +144,7 @@ impl PromptUsage {
 
     /// Drop cost ticks when partial or incomplete so all wire surfaces fail closed.
     /// Incomplete bills clear ticks even when `cost_is_partial` is false.
-    pub fn scrub_untrustworthy_costs(&mut self) {
+    pub(crate) fn scrub_untrustworthy_costs(&mut self) {
         if !(self.usage_is_incomplete || self.totals.cost_is_partial) {
             return;
         }
@@ -282,7 +297,7 @@ pub fn ticks_to_usd(ticks: i64) -> f64 {
 }
 
 /// Full ACP input → headless uncached input (`full − cache_read`).
-pub fn uncached_input_tokens(full_input: u64, cached_read: u64) -> u64 {
+pub(crate) fn uncached_input_tokens(full_input: u64, cached_read: u64) -> u64 {
     full_input.saturating_sub(cached_read)
 }
 
@@ -294,7 +309,7 @@ pub fn uncached_input_tokens(full_input: u64, cached_read: u64) -> u64 {
 /// - Omits all cost floats when partial or incomplete (absence ≠ free).
 /// - Incomplete with no tokens emits only `usage_is_incomplete` (no zero usage object).
 /// - `modelUsage` rows are a reduced external-compat schema (camelCase; no reasoning/duration).
-pub fn project_result_usage(result: &mut serde_json::Value, usage: &PromptUsage) {
+pub(crate) fn project_result_usage(result: &mut serde_json::Value, usage: &PromptUsage) {
     if usage.usage_is_incomplete && usage.is_token_empty() {
         result["usage_is_incomplete"] = true.into();
         return;
@@ -418,6 +433,25 @@ pub struct HookRunEntryDto {
     pub output: Option<String>,
 }
 
+/// Why auto-compaction stopped before completing.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    strum::Display,
+    strum::EnumString,
+    strum::AsRefStr,
+)]
+#[serde(rename_all = "snake_case")]
+#[strum(serialize_all = "snake_case")]
+pub enum AutoCompactCancelReason {
+    UserCancelled,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "sessionUpdate")]
 pub enum SessionUpdate {
@@ -483,7 +517,7 @@ pub enum SessionUpdate {
     /// Auto-compact was cancelled (user pressed Ctrl+C)
     AutoCompactCancelled {
         /// Reason for cancellation
-        reason: String,
+        reason: AutoCompactCancelReason,
     },
     /// Auto-continue completed after compaction
     /// This signals the TUI to flush pending agent messages and end the turn
@@ -525,9 +559,7 @@ pub enum SessionUpdate {
         event_name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_name: Option<String>,
-        /// The prompt turn this batch belongs to, when known; lets the
-        /// client keep a delayed `stop`/`stop_failure` batch off the wrong
-        /// turn's marker.
+        /// Keeps a delayed turn-end batch off the wrong turn's marker.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         prompt_id: Option<String>,
         runs: Vec<HookRunEntryDto>,
@@ -579,6 +611,23 @@ pub enum SessionUpdate {
     /// forever; on receipt the pager clears it. Never emitted for an automatic
     /// recap (those show no spinner).
     SessionRecapUnavailable,
+    /// Ultra-short summary of the just-finished successful turn, generated at
+    /// turn end for the dashboard row's secondary line. Rows show it until
+    /// the next successful turn's summary replaces it.
+    ///
+    /// Transient (never persisted to `updates.jsonl`): the durable copy lives
+    /// in `summary.json` and reaches non-attached clients via the roster.
+    /// Clients may apply deliveries directly — generation is serialized
+    /// shell-side (one in-flight call, aborted by newer turns) and gateway
+    /// delivery is ordered, so the latest delivery is the latest summary.
+    LastTurnSummary {
+        /// One-line fragment (~5–12 words, capped at a safety limit).
+        summary: String,
+        /// Prompt id of the turn this summary describes (provenance; also
+        /// persisted as `Summary::last_turn_summary_prompt_id`).
+        #[serde(default)]
+        prompt_id: Option<String>,
+    },
     /// A compaction checkpoint marker written to `updates.jsonl`.
     ///
     /// This is **persist-only** — it is never sent to the gateway/UI. It records
@@ -757,7 +806,12 @@ pub enum SessionUpdate {
         subagent_id: Option<String>,
     },
     /// A scheduled task was deleted/cancelled.
-    ScheduledTaskDeleted { task_id: String },
+    ScheduledTaskDeleted {
+        task_id: String,
+        /// `Unknown` on rows persisted before the reason field existed.
+        #[serde(default)]
+        reason: xai_grok_tools::notification::ScheduledTaskRemovedReason,
+    },
     /// A monitor event (stdout line from a monitor background process).
     MonitorEvent {
         task_id: String,
@@ -1102,6 +1156,9 @@ impl From<&crate::session::image_normalize::ImageCompressionInfo> for ImageCompr
     }
 }
 
+pub const DISK_FULL_ERROR_TYPE: &str = "disk_full";
+pub const DISK_FULL_USER_MESSAGE: &str = "Out of disk space. Free some space and try again.";
+
 /// State of a retry operation or error for visual feedback in the TUI
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", tag = "type")]
@@ -1141,8 +1198,8 @@ pub enum RetryState {
 /// again. Drives the actionable re-auth banner.
 ///
 /// `legacy_auth` is intentionally excluded: those failures carry their own
-/// detailed migration guidance (`grok logout` / `grok login`) in the
-/// message, so we surface that verbatim instead of the generic prompt.
+/// detailed migration guidance (`grok update` / `grok logout` / `grok login`)
+/// in the message, so we surface that verbatim instead of the generic prompt.
 ///
 /// `auth_transient` is excluded for the opposite reason: the shell emits it
 /// only when the failure self-heals (see `AuthManager::requires_manual_reauth`)
@@ -1703,6 +1760,16 @@ mod tests {
         let json = r#"{"sessionUpdate": "memory_flush_started"}"#;
         let update: SessionUpdate = serde_json::from_str(json).unwrap();
         assert_eq!(update, SessionUpdate::MemoryFlushStarted);
+
+        // AutoCompactCancelled (strenum reason)
+        let json = r#"{"sessionUpdate": "auto_compact_cancelled", "reason": "user_cancelled"}"#;
+        let update: SessionUpdate = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            update,
+            SessionUpdate::AutoCompactCancelled {
+                reason: AutoCompactCancelReason::UserCancelled,
+            }
+        );
 
         // AutoCompactFailed (struct variant)
         let json = r#"{"sessionUpdate": "auto_compact_failed", "error": "oom"}"#;
