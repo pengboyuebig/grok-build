@@ -1472,6 +1472,14 @@ pub(crate) async fn persist_setting(
                 .await
                 .map_err(|e| e.to_string())
         }
+        "custom_model_id" => {
+            let SettingValue::String(s) = value else {
+                return Err(kind_mismatch("custom_model_id", "String", &value));
+            };
+            xai_grok_shell::util::config::set_custom_model_id(s)
+                .await
+                .map_err(|e| e.to_string())
+        }
         "custom_model_selected" => {
             let SettingValue::String(s) = value else {
                 return Err(kind_mismatch("custom_model_selected", "String", &value));

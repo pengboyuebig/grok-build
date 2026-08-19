@@ -6,7 +6,7 @@ use super::setters::{
     set_combine_queued_prompts_inner, set_compact_mode, set_compact_mode_inner,
     set_confirm_before_rewind_inner, set_contextual_hint_inner,
     set_custom_model_api_backend_inner, set_custom_model_api_key_inner,
-    set_custom_model_base_url_inner, set_custom_model_fetch_models_inner,
+    set_custom_model_base_url_inner, set_custom_model_fetch_models_inner, set_custom_model_id_inner,
     set_custom_model_selected_inner, set_default_model_inner,
     set_default_selected_permission_inner, set_display_refresh_auto_cadence_inner,
     set_follow_up_behavior_inner, set_fork_secondary_model_inner, set_group_tool_verbs_inner,
@@ -956,6 +956,9 @@ pub(in crate::app::dispatch) fn action_for_reset(
         ("custom_model_selected", SettingValue::String(_)) => {
             Some(Action::SetCustomModelSelected(String::new()))
         }
+        ("custom_model_id", SettingValue::String(_)) => {
+            Some(Action::SetCustomModelId(String::new()))
+        }
 
         _ => None,
     }
@@ -1262,6 +1265,9 @@ pub(in crate::app::dispatch) fn apply_setting_rollback(
         // custom_model_selected: String rollback.
         ("custom_model_selected", SettingValue::String(s)) => {
             set_custom_model_selected_inner(app, s.clone());
+        }
+        ("custom_model_id", SettingValue::String(s)) => {
+            set_custom_model_id_inner(app, s.clone());
         }
 
         _ => {

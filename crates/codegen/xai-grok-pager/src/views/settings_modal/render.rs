@@ -1285,12 +1285,24 @@ fn render_picking_group(
     }
 
     // Chooser shape: title + gap (2) before the description renders.
+    let title = if group_key == "custom_model_config" {
+        "Custom AI Model Config · s save/update · x delete"
+    } else {
+        group_meta.label
+    };
+    let description = if group_key == "custom_model_config"
+        && state.state.pending_custom_model_delete.is_some()
+    {
+        "Press x again to permanently delete the named custom model. Any other key cancels."
+    } else {
+        group_meta.description
+    };
     let header_rows = render_sub_pane_header(
         buf,
         area,
         theme,
-        group_meta.label,
-        group_meta.description,
+        title,
+        description,
         2,
     );
     if area.height <= header_rows {
@@ -1339,13 +1351,25 @@ fn render_picking_group(
             Style::default().fg(theme.text_primary).bg(bg)
         };
 
-        // Value read live from the snapshot (refreshed after each toggle).
-        let on = matches!(state.value_for(child_key), Some(SettingValue::Bool(true)));
-        let value_text = if on { "on" } else { "off" };
-        let value_style = if on {
-            Style::default().fg(theme.accent_user).bg(bg)
-        } else {
-            Style::default().fg(theme.gray).bg(bg)
+        let value_text = match state.value_for(child_key) {
+            Some(SettingValue::Bool(true)) => "on".to_string(),
+            Some(SettingValue::Bool(false)) => "off".to_string(),
+            Some(SettingValue::Enum(value)) => value.to_string(),
+            Some(SettingValue::String(value)) if *child_key == "custom_model_api_key" => {
+                if value.is_empty() {
+                    "(not set)".to_string()
+                } else {
+                    "••••••••".to_string()
+                }
+            }
+            Some(SettingValue::String(value)) if value.is_empty() => "(not set)".to_string(),
+            Some(SettingValue::String(value)) => value,
+            Some(SettingValue::Int(value)) => value.to_string(),
+            None => "(not set)".to_string(),
+        };
+        let value_style = match state.value_for(child_key) {
+            Some(SettingValue::Bool(true)) => Style::default().fg(theme.accent_user).bg(bg),
+            _ => Style::default().fg(theme.gray).bg(bg),
         };
 
         // " <marker>  <label> … <value> " (value right-aligned with a pad).
@@ -1384,7 +1408,7 @@ fn render_picking_group(
             );
         }
         if value_x + value_w <= area.x + area.width {
-            buf.set_span(value_x, y, &Span::styled(value_text, value_style), value_w);
+            buf.set_span(value_x, y, &Span::styled(value_text.as_str(), value_style), value_w);
         }
         y = y.saturating_add(1);
     }

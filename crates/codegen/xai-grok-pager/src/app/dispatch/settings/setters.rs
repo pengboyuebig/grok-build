@@ -2373,8 +2373,31 @@ pub(in crate::app::dispatch) fn set_custom_model_selected(
     }]
 }
 
-/// Save the custom API config form: persist `[model.<name>]` section to disk,
-/// close the modal, and update the in-memory state.
+/// State-only mutation for the provider model ID.
+pub(super) fn set_custom_model_id_inner(app: &mut AppView, value: String) {
+    app.current_ui.custom_model_id = Some(value);
+}
+
+/// Outer dispatcher for `Action::SetCustomModelId`.
+pub(in crate::app::dispatch) fn set_custom_model_id(
+    app: &mut AppView,
+    new: String,
+) -> Vec<Effect> {
+    if app.current_ui.custom_model_id.as_deref() == Some(&new) {
+        return vec![];
+    }
+    let prev = app.current_ui.custom_model_id.clone();
+    set_custom_model_id_inner(app, new.clone());
+    refresh_open_settings_modals(app);
+    app.show_toast(&format!("\u{2713} Custom model ID: {new}"));
+    vec![Effect::PersistSetting {
+        key: "custom_model_id",
+        value: crate::settings::SettingValue::String(new),
+        rollback_value: crate::settings::SettingValue::String(prev.unwrap_or_default()),
+    }]
+}
+
+
 ///
 /// Called when the user presses **Save** in `EditingCustomApiForm` mode.
 /// Persists the `[model.<name>]` section via
@@ -2387,14 +2410,77 @@ pub(in crate::app::dispatch) fn set_custom_model_selected(
 /// and broadcasts the updated model catalog to the pager — this ensures
 /// the custom model appears in the default-model selector and `/model`
 /// slash command immediately.
+pub(in crate::app::dispatch) fn delete_custom_api_model(
+    app: &mut AppView,
+    acp_tx: &xai_acp_lib::AcpAgentTx,
+    model: String,
+) -> Vec<Effect> {
+    let model = model.trim().to_string();
+    if model.is_empty() {
+        return vec![];
+    }
+    let acp_tx = acp_tx.clone();
+    let name = model.clone();
+    tokio::spawn(async move {
+        match xai_grok_shell::util::config::delete_custom_api_model(&name).await {
+            Ok(true) => {
+                let request = agent_client_protocol::ExtRequest::new(
+                    "x.ai/internal/reload_models",
+                    serde_json::value::to_raw_value(&serde_json::json!({}))
+                        .expect("serialize reload params")
+                        .into(),
+                );
+                if let Err(error) = xai_acp_lib::acp_send(request, &acp_tx).await {
+                    tracing::error!(target: "settings", %error, "failed to reload models after delete");
+                }
+            }
+            Ok(false) => tracing::warn!(target: "settings", model = %name, "custom model did not exist"),
+            Err(error) => tracing::error!(target: "settings", %error, model = %name, "failed to delete custom model"),
+        }
+    });
+
+    let cleared_selected_model =
+        app.current_ui.custom_model_selected.as_deref() == Some(model.as_str());
+    let previous_selected_model = app.current_ui.custom_model_selected.clone();
+    let previous_model_id = app.current_ui.custom_model_id.clone();
+    if cleared_selected_model {
+        app.current_ui.custom_model_selected = None;
+        app.current_ui.custom_model_id = None;
+        refresh_open_settings_modals(app);
+    }
+    app.show_toast(&format!("Deleting custom model: {model}"));
+    if cleared_selected_model {
+        vec![
+            Effect::PersistSetting {
+                key: "custom_model_selected",
+                value: crate::settings::SettingValue::String(String::new()),
+                rollback_value: crate::settings::SettingValue::String(
+                    previous_selected_model.unwrap_or_default(),
+                ),
+            },
+            Effect::PersistSetting {
+                key: "custom_model_id",
+                value: crate::settings::SettingValue::String(String::new()),
+                rollback_value: crate::settings::SettingValue::String(
+                    previous_model_id.unwrap_or_default(),
+                ),
+            },
+        ]
+    } else {
+        vec![]
+    }
+}
+
+/// Save the custom API configuration to `[model.<name>]` and the matching UI fields.
 pub(in crate::app::dispatch) fn save_custom_api_config(
     app: &mut AppView,
     acp_tx: &xai_acp_lib::AcpAgentTx,
+    name: String,
+    model_id: String,
     base_url: String,
     api_key: String,
     api_backend: String,
     fetch_models: bool,
-    model: String,
 ) -> Vec<Effect> {
     // --- close the settings modal ---
     if let ActiveView::Agent(id) = app.active_view {
@@ -2407,7 +2493,8 @@ pub(in crate::app::dispatch) fn save_custom_api_config(
     // After the write finishes, send an ACP reload so the shell agent
     // re-reads config.toml and broadcasts the updated model catalog.
     {
-        let name = model.clone();
+        let name = name.clone();
+        let model_id = model_id.clone();
         let base_url = base_url.clone();
         let api_key = api_key.clone();
         let api_backend = api_backend.clone();
@@ -2420,6 +2507,7 @@ pub(in crate::app::dispatch) fn save_custom_api_config(
         tokio::spawn(async move {
             match xai_grok_shell::util::config::save_custom_api_model(
                 &name,
+                &model_id,
                 &base_url,
                 &api_key,
                 &api_backend,
@@ -2480,8 +2568,11 @@ pub(in crate::app::dispatch) fn save_custom_api_config(
     let prev_fetch = app.current_ui.custom_model_fetch_models;
     app.current_ui.custom_model_fetch_models = Some(fetch_models);
 
+    let prev_model_id = app.current_ui.custom_model_id.clone();
+    app.current_ui.custom_model_id = Some(model_id.clone());
+
     let prev_model = app.current_ui.custom_model_selected.clone();
-    app.current_ui.custom_model_selected = Some(model.clone());
+    app.current_ui.custom_model_selected = Some(name.clone());
 
     refresh_open_settings_modals(app);
 
@@ -2521,8 +2612,13 @@ pub(in crate::app::dispatch) fn save_custom_api_config(
             rollback_value: crate::settings::SettingValue::Bool(prev_fetch.unwrap_or(false)),
         },
         Effect::PersistSetting {
+            key: "custom_model_id",
+            value: crate::settings::SettingValue::String(model_id),
+            rollback_value: crate::settings::SettingValue::String(prev_model_id.unwrap_or_default()),
+        },
+        Effect::PersistSetting {
             key: "custom_model_selected",
-            value: crate::settings::SettingValue::String(model),
+            value: crate::settings::SettingValue::String(name),
             rollback_value: crate::settings::SettingValue::String(
                 prev_model.unwrap_or_default(),
             ),

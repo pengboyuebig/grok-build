@@ -622,18 +622,21 @@ pub enum Action {
     /// Toggle fetching models from the custom API endpoint.
     /// Persisted to `[ui].custom_model_fetch_models`.
     SetCustomModelFetchModels(bool),
-    /// Commit the selected custom model name. Persisted to `[ui].custom_model_selected`.
+    /// Commit the custom model configuration name. Persisted to `[ui].custom_model_selected`.
     SetCustomModelSelected(String),
+    /// Commit the provider model ID. Persisted to `[ui].custom_model_id`.
+    SetCustomModelId(String),
     /// Save the complete custom API configuration from the form.
-    /// Persists all 5 fields atomically when the user presses Save
-    /// in the EditingCustomApiForm mode.
     SaveCustomApiConfig {
+        name: String,
+        model_id: String,
         base_url: String,
         api_key: String,
         api_backend: String,
         fetch_models: bool,
-        model: String,
     },
+    /// Remove a custom `[model.<name>]` configuration and reload the catalog.
+    DeleteCustomApiModel(String),
     /// Preview a theme without persisting — updates the live display
     /// only. Used by the picker on Up/Down and Esc (revert).
     PreviewTheme(String),
@@ -1195,7 +1198,11 @@ impl PlanModeKind {
     }
     /// Construct from a bool (the inverse of [`Self::to_bool`]).
     pub fn from_bool(b: bool) -> Self {
-        if b { Self::On } else { Self::Off }
+        if b {
+            Self::On
+        } else {
+            Self::Off
+        }
     }
 }
 /// What user gesture triggered a turn cancel; sent as `session/cancel`'s

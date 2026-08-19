@@ -785,9 +785,13 @@ pub fn current_value_for(
         "custom_model_fetch_models" => Some(SettingValue::Bool(
             ui.custom_model_fetch_models.unwrap_or(false),
         )),
-        // custom_model_selected: DynamicEnum, reads from snapshot.
+        // custom_model_selected is the `[model.<name>]` configuration name.
         "custom_model_selected" => Some(SettingValue::String(
             ui.custom_model_selected.clone().unwrap_or_default(),
+        )),
+        // custom_model_id is the actual model identifier sent to the provider.
+        "custom_model_id" => Some(SettingValue::String(
+            ui.custom_model_id.clone().unwrap_or_default(),
         )),
 
         _ => None,

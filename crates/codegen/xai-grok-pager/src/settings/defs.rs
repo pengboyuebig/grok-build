@@ -582,6 +582,7 @@ const CUSTOM_MODEL_CHILDREN: &[&str] = &[
     "custom_model_api_backend",
     "custom_model_fetch_models",
     "custom_model_selected",
+    "custom_model_id",
 ];
 
 /// Build the catalog. Called once at process start via
@@ -1833,15 +1834,23 @@ pub fn default_settings() -> Vec<SettingMeta> {
             key: "custom_model_selected",
             category: SettingCategory::Models,
             owner: SettingOwner::Shell,
+            label: "Name",
+            description: "Configuration name used for [model.<name>] and shown in the model picker.",
+            keywords: &["custom", "name", "configuration", "model", "provider"],
+            kind: SettingKind::String {
+                default: "",
+                validator: StringValidator::Any,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        SettingMeta {
+            key: "custom_model_id",
+            category: SettingCategory::Models,
+            owner: SettingOwner::Shell,
             label: "Custom Model",
-            description: "Enter the model name to use with your custom API provider (e.g. gpt-4o, claude-3-opus).",
-            keywords: &[
-                "custom",
-                "model",
-                "selected",
-                "api",
-                "provider",
-            ],
+            description: "Actual model ID sent to your provider (for example gpt-4o or claude-3-opus).",
+            keywords: &["custom", "model", "id", "provider", "api"],
             kind: SettingKind::String {
                 default: "",
                 validator: StringValidator::Any,

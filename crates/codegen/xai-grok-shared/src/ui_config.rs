@@ -195,9 +195,12 @@ pub struct UiConfig {
     /// Whether the user has triggered a model fetch for the custom API.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_model_fetch_models: Option<bool>,
-    /// The selected model name from the custom API catalog.
+    /// Configuration name used as the `[model.<name>]` table key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_model_selected: Option<String>,
+    /// Provider model ID sent in API requests for the current custom model form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom_model_id: Option<String>,
     /// Cached model names from the custom API endpoint (read at snapshot time).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom_api_models: Option<Vec<String>>,
@@ -320,6 +323,7 @@ impl Default for UiConfig {
             custom_model_api_backend: None,
             custom_model_fetch_models: None,
             custom_model_selected: None,
+            custom_model_id: None,
             custom_api_models: None,
         }
     }

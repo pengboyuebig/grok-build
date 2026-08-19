@@ -76,12 +76,12 @@ use super::settings::setters::{
     clear_default_model, clear_fork_secondary_model, preview_auto_dark_theme,
     preview_auto_light_theme, preview_theme, set_ask_user_question_timeout_enabled,
     set_auto_dark_theme, set_auto_light_theme, set_auto_update, set_collapsed_edit_blocks,
-    save_custom_api_config, set_combine_queued_prompts, set_compact_mode,
+    delete_custom_api_model, save_custom_api_config, set_combine_queued_prompts, set_compact_mode,
     set_confirm_before_rewind, set_contextual_hint_image_input, set_contextual_hint_plan_mode,
     set_contextual_hint_send_now, set_contextual_hint_small_screen, set_contextual_hint_ssh_wrap,
     set_contextual_hint_undo, set_contextual_hint_word_select, set_custom_model_api_backend,
     set_custom_model_api_key, set_custom_model_base_url, set_custom_model_fetch_models,
-    set_custom_model_selected, set_default_model, set_default_selected_permission,
+    set_custom_model_id, set_custom_model_selected, set_default_model, set_default_selected_permission,
     set_display_refresh_auto_cadence, set_follow_up_behavior, set_fork_secondary_model,
     set_group_tool_verbs, set_hunk_tracker_mode, set_invert_scroll, set_keep_text_selection,
     set_max_thoughts_width, set_multiline_mode, set_page_flip_on_send, set_prompt_suggestions,
@@ -1097,9 +1097,30 @@ pub(crate) fn dispatch(action: Action, app: &mut AppView) -> Vec<Effect> {
         Action::SetCustomModelApiBackend(v) => set_custom_model_api_backend(app, v),
         Action::SetCustomModelFetchModels(v) => set_custom_model_fetch_models(app, v),
         Action::SetCustomModelSelected(v) => set_custom_model_selected(app, v),
-        Action::SaveCustomApiConfig { base_url, api_key, api_backend, fetch_models, model } => {
+        Action::SetCustomModelId(v) => set_custom_model_id(app, v),
+        Action::SaveCustomApiConfig {
+            name,
+            model_id,
+            base_url,
+            api_key,
+            api_backend,
+            fetch_models,
+        } => {
             let acp_tx = app.acp_tx.clone();
-            save_custom_api_config(app, &acp_tx, base_url, api_key, api_backend, fetch_models, model)
+            save_custom_api_config(
+                app,
+                &acp_tx,
+                name,
+                model_id,
+                base_url,
+                api_key,
+                api_backend,
+                fetch_models,
+            )
+        }
+        Action::DeleteCustomApiModel(model) => {
+            let acp_tx = app.acp_tx.clone();
+            delete_custom_api_model(app, &acp_tx, model)
         }
         Action::SetMaxThoughtsWidth(v) => set_max_thoughts_width(app, v),
         Action::SetShowTips(v) => set_show_tips(app, v),

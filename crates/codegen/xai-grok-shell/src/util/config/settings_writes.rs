@@ -431,6 +431,11 @@ pub async fn set_custom_model_selected(value: String) -> Result<()> {
     update_config(|cfg| cfg.ui.custom_model_selected = Some(value)).await
 }
 
+/// Persist `[ui].custom_model_id` via `update_config`.
+pub async fn set_custom_model_id(value: String) -> Result<()> {
+    update_config(|cfg| cfg.ui.custom_model_id = Some(value)).await
+}
+
 /// Persist a `[model.<name>]` section directly into `config.toml`.
 ///
 /// Uses the process-wide write lock so this doesn't interleave with a
@@ -438,7 +443,7 @@ pub async fn set_custom_model_selected(value: String) -> Result<()> {
 ///
 /// ```toml
 /// [model.<name>]
-/// model = "<name>"
+/// model = "<model_id>"
 /// base_url = "<base_url>"
 /// name = "<name>"
 /// api_backend = "<api_backend>"
@@ -448,6 +453,7 @@ pub async fn set_custom_model_selected(value: String) -> Result<()> {
 /// ```
 pub async fn save_custom_api_model(
     name: &str,
+    model_id: &str,
     base_url: &str,
     api_key: &str,
     api_backend: &str,
@@ -476,7 +482,14 @@ pub async fn save_custom_api_model(
     if !matches!(root, TomlValue::Table(_)) {
         root = TomlValue::Table(TomlMap::new());
     }
-    upsert_custom_model_section(&mut root, name, base_url, api_key, api_backend);
+    upsert_custom_model_section(
+        &mut root,
+        name,
+        model_id,
+        base_url,
+        api_key,
+        api_backend,
+    );
 
     let toml_str = toml::to_string_pretty(&root)?;
     if let Some(parent) = path.parent() {
@@ -487,6 +500,47 @@ pub async fn save_custom_api_model(
         .map_err(|e| anyhow::anyhow!("failed to write {}: {}", path.display(), e))?;
 
     Ok(())
+}
+
+/// Remove a `[model.<name>]` section from `config.toml`.
+///
+/// Returns `Ok(true)` when a configured model was removed and `Ok(false)` when
+/// no matching section exists. The write uses the same lock and atomic replace
+/// path as [`save_custom_api_model`].
+pub async fn delete_custom_api_model(name: &str) -> Result<bool> {
+    let _guard = lock_config_writes().await;
+    let path = user_config_path();
+    let content = match std::fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut root: TomlValue = toml::from_str(&content).map_err(|parse_err| {
+        anyhow::anyhow!(
+            "refusing to remove [model.{name}] from unparseable {}: {}",
+            path.display(),
+            parse_err,
+        )
+    })?;
+    let Some(root_table) = root.as_table_mut() else {
+        return Ok(false);
+    };
+
+    let mut removed = root_table.remove(&format!("model.{name}")).is_some();
+    if let Some(TomlValue::Table(models)) = root_table.get_mut("model") {
+        removed |= models.remove(name).is_some();
+        if models.is_empty() {
+            root_table.remove("model");
+        }
+    }
+    if !removed {
+        return Ok(false);
+    }
+
+    let toml_str = toml::to_string_pretty(&root)?;
+    super::persist::atomic_write_string(&path, &toml_str)
+        .map_err(|error| anyhow::anyhow!("failed to write {}: {}", path.display(), error))?;
+    Ok(true)
 }
 
 /// Upsert the `[model.<name>]` section into a parsed config.toml root.
@@ -503,6 +557,7 @@ pub async fn save_custom_api_model(
 fn upsert_custom_model_section(
     root: &mut TomlValue,
     name: &str,
+    model_id: &str,
     base_url: &str,
     api_key: &str,
     api_backend: &str,
@@ -546,7 +601,10 @@ fn upsert_custom_model_section(
         *section = TomlValue::Table(TomlMap::new());
     }
     if let TomlValue::Table(section_table) = section {
-        section_table.insert("model".to_string(), TomlValue::String(name.to_string()));
+        section_table.insert(
+            "model".to_string(),
+            TomlValue::String(model_id.to_string()),
+        );
         section_table.insert(
             "base_url".to_string(),
             TomlValue::String(base_url.to_string()),
@@ -578,6 +636,7 @@ mod tests {
         upsert_custom_model_section(
             &mut root,
             "my-model",
+            "provider-model-id",
             "https://api.example.com/v1",
             "sk-test",
             "openai",
@@ -589,6 +648,15 @@ mod tests {
             .get("model")
             .and_then(|m| m.get("my-model"))
             .expect("nested [model.my-model] section");
+        assert_eq!(
+            entry.get("model").and_then(|v| v.as_str()),
+            Some("provider-model-id"),
+            "provider model ID must not be used as the configuration table name"
+        );
+        assert_eq!(
+            entry.get("name").and_then(|v| v.as_str()),
+            Some("my-model")
+        );
         assert_eq!(
             entry.get("base_url").and_then(|v| v.as_str()),
             Some("https://api.example.com/v1")
@@ -631,7 +699,14 @@ mod tests {
         );
         let mut root = TomlValue::Table(root_table);
 
-        upsert_custom_model_section(&mut root, "new-model", "https://new", "k", "openai");
+        upsert_custom_model_section(
+            &mut root,
+            "new-model",
+            "provider-new-model",
+            "https://new",
+            "k",
+            "openai",
+        );
 
         assert!(root.get("model.old-model").is_none(), "legacy key removed");
         let migrated = root

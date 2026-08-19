@@ -208,9 +208,9 @@ fn handle_picking_enum(state: &mut SettingsModalState, key: &KeyEvent) -> Settin
     }
 }
 
-/// Group sub-sheet key routing. Up/Down moves between the child toggles;
-/// Space/Enter toggles the focused child in place (the sheet stays open);
-/// Esc returns to Browse.
+/// Group sub-sheet key routing. Supports each child setting's registered kind:
+/// Bool toggles in place, while String/Int and Enum children reuse the standard
+/// editors and pickers.
 fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> SettingsKeyOutcome {
     let (group_key, child_idx) = match &state.state.mode {
         SettingsMode::PickingGroup { key, child_idx } => (*key, *child_idx),
@@ -221,6 +221,13 @@ fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> Setti
         // Defensive: a group with no children can't be navigated — back out.
         state.transition_to_browse();
         return SettingsKeyOutcome::Changed;
+    }
+
+    if group_key == "custom_model_config"
+        && !matches!(key.code, KeyCode::Char('x'))
+        && state.state.pending_custom_model_delete.take().is_some()
+    {
+        // Any unrelated key cancels a pending destructive operation.
     }
 
     match key.code {
@@ -238,21 +245,91 @@ fn handle_picking_group(state: &mut SettingsModalState, key: &KeyEvent) -> Setti
             state.transition_to_picking_group(group_key, child_idx - 1);
             SettingsKeyOutcome::Changed
         }
-        // Space/Enter toggle the focused child Bool and stay in the sheet so the
-        // user can flip several tips in a row. The dispatcher refreshes the
-        // modal snapshot, so the new value paints on the next frame.
         KeyCode::Char(' ') | KeyCode::Enter => {
             let Some(child_key) = children.get(child_idx).copied() else {
                 return SettingsKeyOutcome::Unchanged;
             };
-            let cur = match state.value_for(child_key) {
-                Some(SettingValue::Bool(b)) => b,
-                _ => return SettingsKeyOutcome::Unchanged,
+            let Some(meta) = state.registry.find(child_key) else {
+                return SettingsKeyOutcome::Unchanged;
             };
-            match action_for_bool(child_key, !cur) {
-                Some(action) => SettingsKeyOutcome::Action(action),
-                None => SettingsKeyOutcome::Unchanged,
+            match &meta.kind {
+                SettingKind::Bool { .. } => state
+                    .toggle_bool_for(child_key)
+                    .map_or(SettingsKeyOutcome::Unchanged, SettingsKeyOutcome::Action),
+                SettingKind::Enum { .. } | SettingKind::DynamicEnum { .. } => {
+                    if state.try_enter_picking_enum_for(child_key) {
+                        SettingsKeyOutcome::Changed
+                    } else {
+                        SettingsKeyOutcome::Unchanged
+                    }
+                }
+                SettingKind::String { .. } | SettingKind::Int { .. } => {
+                    if state.try_enter_editing_value_for(child_key) {
+                        SettingsKeyOutcome::Changed
+                    } else {
+                        SettingsKeyOutcome::Unchanged
+                    }
+                }
+                SettingKind::Group { .. } => SettingsKeyOutcome::Unchanged,
             }
+        }
+        KeyCode::Char('x') if group_key == "custom_model_config" && key.modifiers.is_empty() => {
+            let model = state
+                .value_for("custom_model_selected")
+                .and_then(|value| match value { SettingValue::String(value) => Some(value), _ => None })
+                .unwrap_or_default();
+            if model.trim().is_empty() {
+                return SettingsKeyOutcome::Unchanged;
+            }
+            if state.state.pending_custom_model_delete.as_deref() == Some(model.as_str()) {
+                state.state.pending_custom_model_delete = None;
+                return SettingsKeyOutcome::Action(Action::DeleteCustomApiModel(model));
+            }
+            state.state.pending_custom_model_delete = Some(model);
+            SettingsKeyOutcome::Changed
+        }
+        KeyCode::Char('s') if group_key == "custom_model_config" && key.modifiers.is_empty() => {
+            let base_url = state
+                .value_for("custom_model_base_url")
+                .and_then(|value| match value { SettingValue::String(value) => Some(value), _ => None })
+                .unwrap_or_default();
+            let api_key = state
+                .value_for("custom_model_api_key")
+                .and_then(|value| match value { SettingValue::String(value) => Some(value), _ => None })
+                .unwrap_or_default();
+            let api_backend = state
+                .value_for("custom_model_api_backend")
+                .and_then(|value| match value { SettingValue::Enum(value) => Some(value.to_string()), _ => None })
+                .unwrap_or_else(|| "openai".to_string());
+            let fetch_models = matches!(
+                state.value_for("custom_model_fetch_models"),
+                Some(SettingValue::Bool(true))
+            );
+            let name = state
+                .value_for("custom_model_selected")
+                .and_then(|value| match value {
+                    SettingValue::String(value) => Some(value),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            let model_id = state
+                .value_for("custom_model_id")
+                .and_then(|value| match value {
+                    SettingValue::String(value) => Some(value),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            if base_url.trim().is_empty() || name.trim().is_empty() || model_id.trim().is_empty() {
+                return SettingsKeyOutcome::Unchanged;
+            }
+            SettingsKeyOutcome::Action(Action::SaveCustomApiConfig {
+                name,
+                model_id,
+                base_url,
+                api_key,
+                api_backend,
+                fetch_models,
+            })
         }
         KeyCode::Esc => {
             state.transition_to_browse();

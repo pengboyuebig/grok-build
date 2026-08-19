@@ -7,9 +7,9 @@ use ratatui::layout::Rect;
 use crate::app::actions::Action;
 use crate::input::line_editor::LineEditor;
 use crate::settings::{
-    CodingDataSharingLock, EnumChoice, OwnedEnumChoice, PagerLocalSnapshot, SettingCategory,
-    SettingKey, SettingKind, SettingMeta, SettingValue, SettingsRegistry, StringValidator,
-    current_value_for, dynamic_enum_choices,
+    current_value_for, dynamic_enum_choices, CodingDataSharingLock, EnumChoice, OwnedEnumChoice,
+    PagerLocalSnapshot, SettingCategory, SettingKey, SettingKind, SettingMeta, SettingValue,
+    SettingsRegistry, StringValidator,
 };
 use crate::views::modal_window::ModalWindowState;
 
@@ -108,6 +108,9 @@ pub enum SettingsModalMode {
 pub(super) struct SettingsState {
     pub(super) filter: LineEditor,
     pub(super) mode: SettingsMode,
+    /// Model name armed by the first `x` in the custom model group. A second
+    /// `x` confirms deletion; any other key clears this pending operation.
+    pub(super) pending_custom_model_delete: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -245,6 +248,7 @@ impl SettingsModalState {
             state: SettingsState {
                 filter: LineEditor::default(),
                 mode: SettingsMode::Browse,
+                pending_custom_model_delete: None,
             },
             filtered_cache,
             list_area: Rect::default(),
@@ -572,17 +576,16 @@ impl SettingsModalState {
         };
     }
 
-    /// Transition to `PickingEnum` if the focused row is Enum/DynamicEnum.
-    /// Returns `false` if the focused row is another kind.
-    pub fn try_enter_picking_enum(&mut self) -> bool {
-        let (key, first_canonical, current_value, supports_preview, resolved_choices) = {
-            let Some((key, meta)) = self.focused_setting() else {
+    /// Transition to `PickingEnum` for a setting key if it is an Enum/DynamicEnum.
+    /// Used by both the top-level list and mixed-type group sub-sheets.
+    pub(super) fn try_enter_picking_enum_for(&mut self, key: SettingKey) -> bool {
+        let (first_canonical, current_value, supports_preview, resolved_choices) = {
+            let Some(meta) = self.registry.find(key) else {
                 return false;
             };
             if self.row_lock(key).is_some() {
                 return false;
             }
-            // Handles both static `Enum` and `DynamicEnum` catalogs.
             let (supports_preview, resolved): (bool, Vec<OwnedEnumChoice>) = match &meta.kind {
                 SettingKind::Enum {
                     choices,
@@ -609,25 +612,12 @@ impl SettingsModalState {
                 ),
                 _ => return false,
             };
-            // Soft-fail if a static catalog exceeds the product cap. DynamicEnum
-            // (e.g. models) is exempt — those lists are runtime-sized and always
-            // scroll. The chooser itself scrolls static lists too; this assert is
-            // a design guard, not a render requirement.
-            debug_assert!(
-                resolved.len() <= MAX_PICKER_CHOICES
-                    || matches!(meta.kind, SettingKind::DynamicEnum { .. }),
-                "Static Enum setting `{}` has {} choices, exceeds MAX_PICKER_CHOICES ({}). \
-                 Raise the cap deliberately if a larger curated catalog is required.",
-                key,
-                resolved.len(),
-                MAX_PICKER_CHOICES,
-            );
             let first = resolved
                 .first()
                 .map(|c| c.canonical.clone())
                 .unwrap_or_default();
             let cur = self.value_for(key);
-            (key, first, cur, supports_preview, resolved)
+            (first, cur, supports_preview, resolved)
         };
 
         // Resolve choices_idx from current value. For DynamicEnum,
@@ -685,6 +675,13 @@ impl SettingsModalState {
         true
     }
 
+    /// Transition to `PickingEnum` if the focused row is Enum/DynamicEnum.
+    /// Returns `false` if the focused row is another kind.
+    pub fn try_enter_picking_enum(&mut self) -> bool {
+        let key = self.focused_setting().map(|(key, _)| key);
+        key.is_some_and(|key| self.try_enter_picking_enum_for(key))
+    }
+
     /// Transition to `PickingGroup` if the focused row is a `Group`. Returns
     /// `false` for any other kind so the caller can fall through to the
     /// enum/editor entry points.
@@ -700,9 +697,10 @@ impl SettingsModalState {
         true
     }
 
-    /// Transition to `EditingValue` if the focused row is String or Int.
-    pub fn try_enter_editing_value(&mut self) -> bool {
-        let Some((key, meta)) = self.focused_setting() else {
+    /// Transition to `EditingValue` for a String or Int key. Used by the top-level
+    /// list and mixed-type group sub-sheets.
+    pub(super) fn try_enter_editing_value_for(&mut self, key: SettingKey) -> bool {
+        let Some(meta) = self.registry.find(key) else {
             return false;
         };
         let kind = meta.kind.clone();
@@ -737,6 +735,27 @@ impl SettingsModalState {
         }
         self.hover_row = None;
         true
+    }
+
+    /// Transition to `EditingValue` if the focused row is String or Int.
+    pub fn try_enter_editing_value(&mut self) -> bool {
+        let key = self.focused_setting().map(|(key, _)| key);
+        key.is_some_and(|key| self.try_enter_editing_value_for(key))
+    }
+
+    /// Build the Action that toggles a Bool setting by key.
+    pub(super) fn toggle_bool_for(&self, key: SettingKey) -> Option<Action> {
+        let Some(meta) = self.registry.find(key) else {
+            return None;
+        };
+        if !matches!(meta.kind, SettingKind::Bool { .. }) {
+            return None;
+        }
+        let cur = match self.value_for(key) {
+            Some(SettingValue::Bool(b)) => b,
+            _ => return None,
+        };
+        action_for_bool(key, !cur)
     }
 
     /// Build the Action that toggles the focused Bool row. Returns
@@ -908,6 +927,7 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "confirm_before_rewind" => Some(Action::SetConfirmBeforeRewind(new)),
         "combine_queued_prompts" => Some(Action::SetCombineQueuedPrompts(new)),
 
+        "custom_model_fetch_models" => Some(Action::SetCustomModelFetchModels(new)),
         "invert_scroll" => Some(Action::SetInvertScroll(new)),
         "show_tips" => Some(Action::SetShowTips(new)),
         "auto_update" => Some(Action::SetAutoUpdate(new)),
@@ -972,6 +992,7 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
             "off" => Some(Action::SetPlanMode(crate::app::actions::PlanModeKind::Off)),
             _ => None,
         },
+        "custom_model_api_backend" => Some(Action::SetCustomModelApiBackend(choice.to_string())),
         "hunk_tracker_mode" => Some(Action::SetHunkTrackerMode(choice.to_string())),
         "screen_mode" => Some(Action::SetScreenMode(choice.to_string())),
         "voice_capture_mode" => Some(Action::SetVoiceCaptureMode(choice.to_string())),
@@ -1022,6 +1043,10 @@ pub(super) fn action_for_string(
             }
         }
 
+        "custom_model_base_url" => Some(Action::SetCustomModelBaseUrl(value)),
+        "custom_model_api_key" => Some(Action::SetCustomModelApiKey(value)),
+        "custom_model_selected" => Some(Action::SetCustomModelSelected(value)),
+        "custom_model_id" => Some(Action::SetCustomModelId(value)),
         _ => {
             let _ = value;
             let _ = snapshot;
