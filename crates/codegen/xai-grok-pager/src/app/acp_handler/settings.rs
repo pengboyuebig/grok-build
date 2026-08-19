@@ -6,68 +6,35 @@ pub(super) fn handle_models_update(notif: &acp::ExtNotification, app: &mut AppVi
     if let Ok(model_state) = serde_json::from_str::<acp::SessionModelState>(notif.params.get()) {
         use crate::acp::model_state::ModelState;
         let new_models = ModelState::from(Some(model_state));
-
-        // DEBUG: log all available model ids and names
-        let model_details: Vec<String> = new_models
-            .available
-            .iter()
-            .map(|(id, info)| format!("{} (name={})", id.0, info.name))
-            .collect();
         tracing::info!(
             count = new_models.available.len(),
-            models = ?model_details,
             "models updated via x.ai/models/update"
         );
 
-        let shell_fallback_current = new_models.current.clone();
-
-        // Override app-level default with the active agent's model.
-        let mut app_models = new_models.clone();
-        if let ActiveView::Agent(id) = app.active_view
-            && let Some(agent) = app.agents.get(&id)
-            && let Some(ref agent_model) = agent.session.models.current
-            && app_models.available.contains_key(agent_model)
-        {
-            app_models.current = Some(agent_model.clone());
+        app.models.update_catalog(new_models.available.clone());
+        let stale = app
+            .models
+            .current
+            .as_ref()
+            .is_none_or(|id| !app.models.available.contains_key(id));
+        if stale && let Some(id) = new_models.current {
+            app.models.set_current(id, None);
         }
 
-        app.models = app_models;
-
-        for (id, agent) in app.agents.iter_mut() {
-            // DEBUG: log agent model state before update
-            let before_count = agent.session.models.available.len();
-            let before_keys: Vec<String> = agent.session.models.available.keys().map(|k| k.0.to_string()).collect();
-
-            // Log when an update drops the agent's active model — this is the
-            // moment the status bar visibly "switches model mid-conversation"
-            // (the agent falls back to the shell's current model below).
+        for agent in app.agents.values_mut() {
             if let Some(ref current) = agent.session.models.current
                 && !new_models.available.contains_key(current)
             {
-                tracing::warn!(
+                tracing::debug!(
                     current_model = %current.0,
-                    fallback = ?shell_fallback_current.as_ref().map(|m| m.0.as_ref()),
                     available_count = new_models.available.len(),
-                    before_keys = ?before_keys,
-                    "models update removed this agent's current model; falling back"
+                    "models update dropped this session's model from the catalog; keeping it displayed"
                 );
             }
             agent
                 .session
                 .models
-                .update_catalog(new_models.available.clone(), shell_fallback_current.clone());
-
-            // DEBUG: log after update
-            let after_count = agent.session.models.available.len();
-            let after_keys: Vec<String> = agent.session.models.available.keys().map(|k| k.0.to_string()).collect();
-            tracing::info!(
-                agent_id = %id.0,
-                before_count,
-                after_count,
-                before_keys = ?before_keys,
-                after_keys = ?after_keys,
-                "agent model catalog updated"
-            );
+                .update_catalog(new_models.available.clone());
         }
         true
     } else {
@@ -146,12 +113,13 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
     if let Some(v) = update.show_resolved_model {
         app.show_resolved_model = v;
     }
-    if let Some(v) = update.sharing_enabled {
-        app.sharing_enabled = v;
-        // Propagate to existing agents so slash-command registries stay
-        // in sync (same fan-out pattern used when creating new agents).
+    // Temporary client kill switch: ignore remote `sharing_enabled` until
+    // session share links are restored. Presence is still observed so a
+    // later re-enable can go back to `app.sharing_enabled = v`.
+    if update.sharing_enabled.is_some() {
+        app.sharing_enabled = false;
         for agent in app.agents.values_mut() {
-            agent.set_sharing_enabled(v);
+            agent.set_sharing_enabled(false);
         }
     }
     // Env overrides win over live updates too, mirroring the startup
@@ -177,7 +145,7 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         let was_api_key = app.is_api_key_auth;
         let is_key = super::super::app_view::is_api_key_label(&v);
         app.is_api_key_auth = is_key;
-        app.usage_visible = !is_key && app.team_name.is_none();
+        app.usage_visible = !is_key && app.team_name.is_none() && !app.has_external_auth_provider;
         app.sync_billing_surface_to_agents();
         app.subscription_tier = Some(v);
         app.apply_tier_restrictions();
@@ -235,6 +203,17 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
     //   allow_access=Some(false) without a gate_message must NOT clear the
     //   gate (gate_from_settings returns None when gate_message is absent,
     //   which would incorrectly lift an existing gate).
+
+    // A fresh machine has no auth at startup, so the prefetch never runs and the startup seed sees
+    // no settings. Welcome only: arming behind a session blocks new sessions on an unseen screen.
+    if let Some(gate) = update.consent_gate.as_ref()
+        && matches!(app.consent_state, crate::app::consent::ConsentState::Done)
+        && matches!(app.active_view, crate::app::app_view::ActiveView::Welcome)
+        && app.agents.is_empty()
+    {
+        crate::app::event_loop::seed_consent_state_from_gate(app, Some(gate));
+    }
+
     if update.allow_access == Some(true) {
         let effs = app.lift_gate();
         app.pending_effects.extend(effs);
@@ -261,53 +240,120 @@ pub(super) fn handle_settings_update(notif: &acp::ExtNotification, app: &mut App
         xai_grok_shell::config::load_managed_config().ok(),
     );
 
-    // group_tool_verbs: local overrides win (same precedence as startup).
-    // `update.group_tool_verbs` is an Option<bool>:
-    //   Some(true/false) = remote tier has a value for this field
-    //   None = field absent from update (shell cleared the remote tier)
-    // We wrap it in a RemoteSettings so the layered resolve chain works
-    // identically to how event_loop startup resolves the same flags.
-    let remote_group_tool_verbs = update.group_tool_verbs.map(|v| {
-        let mut rs = xai_grok_shell::util::config::RemoteSettings::default();
-        rs.group_tool_verbs = Some(v);
-        rs
-    });
-    crate::appearance::cache::set_group_tool_verbs(
-        xai_grok_shell::util::config::resolve_group_tool_verbs(
+    // Local layers may beat remote — re-resolve the full chain into the render
+    // cache (mirrors the event_loop.rs startup resolve). Runs on None too: the
+    // shell always publishes this field from its live remote tier, so None
+    // means remote settings cleared it (or an older shell that cannot deliver the
+    // remote tier at all) — either way resolving without a remote value is
+    // correct, and it reverts a previously cached remote enable back to the
+    // local/default (off) resolution instead of leaving Some(true) stuck
+    // until restart.
+    let remote = xai_grok_shell::util::config::RemoteSettings {
+        group_tool_verbs: update.group_tool_verbs,
+        ..Default::default()
+    };
+    let resolved = xai_grok_shell::util::config::resolve_group_tool_verbs(
+        requirements.as_ref(),
+        user_config.as_ref(),
+        managed_config.as_ref(),
+        Some(&remote),
+    )
+    .value;
+    // On a real flip, re-fold every live transcript (mirrors dispatch's
+    // set_group_tool_verbs_inner); unchanged values keep `/new` cheap.
+    // Stale expansion ids describe the old grouping shape — drop them so the
+    // re-fold can't reopen a verb slot expanded or mark a coincident dense
+    // group expanded (see `clear_group_expansion`).
+    if resolved != crate::appearance::cache::load_group_tool_verbs() {
+        crate::appearance::cache::set_group_tool_verbs(resolved);
+        for agent in app.agents.values_mut() {
+            agent.scrollback.clear_group_expansion();
+            agent.scrollback.invalidate_heights();
+            for child in agent.subagent_views.values_mut() {
+                child.scrollback.clear_group_expansion();
+                child.scrollback.invalidate_heights();
+            }
+        }
+    }
+
+    // Same None-reverts contract as group_tool_verbs above: re-resolve the
+    // full local chain with the pushed remote tier so a cleared remote settings
+    // field falls back to local/default instead of staying latched.
+    let remote = xai_grok_shell::util::config::RemoteSettings {
+        collapsed_edit_blocks: update.collapsed_edit_blocks,
+        ..Default::default()
+    };
+    let resolved = xai_grok_shell::util::config::resolve_collapsed_edit_blocks(
+        requirements.as_ref(),
+        user_config.as_ref(),
+        managed_config.as_ref(),
+        Some(&remote),
+    )
+    .value;
+    // On a real flip, re-materialize on-default Edit rows + repaint suffixes
+    // in every live transcript (mirrors dispatch's
+    // set_collapsed_edit_blocks_inner); unchanged values keep `/new` cheap.
+    let prev = crate::appearance::cache::load_collapsed_edit_blocks();
+    if resolved != prev {
+        crate::appearance::cache::set_collapsed_edit_blocks(resolved);
+        for agent in app.agents.values_mut() {
+            agent
+                .scrollback
+                .apply_collapsed_edit_blocks_flip(prev, resolved);
+            for child in agent.subagent_views.values_mut() {
+                child
+                    .scrollback
+                    .apply_collapsed_edit_blocks_flip(prev, resolved);
+            }
+        }
+    }
+
+    // `scheduler_background_loops` is deliberately absent from this handler,
+    // unlike the flags above. A live session's scheduled fires keep the mode
+    // the shell pinned when the session's actor spawned, so applying a pushed
+    // flip here would make `/loop` promise a runtime those fires never get.
+    // The per-session value arrives on the `session/new` / `session/load`
+    // response instead (`AgentView::scheduler_background_loops`).
+
+    // Re-resolve tips from config layers + the updated remote tips.
+    if let Some(remote_tips) = update.tips {
+        use xai_grok_shell::util::config::resolve_tips;
+
+        app.tips = resolve_tips(
             requirements.as_ref(),
             user_config.as_ref(),
             managed_config.as_ref(),
-            remote_group_tool_verbs.as_ref(),
-        )
-        .value,
-    );
+            Some(&remote_tips),
+        );
+        if !app.tips.is_empty() {
+            let grok_home = xai_grok_tools::util::grok_home::grok_home();
+            app.tip = xai_grok_shell::util::tips::pick_and_advance(&app.tips, &grok_home);
+        } else {
+            app.tip = None;
+        }
+    }
 
-    // collapsed_edit_blocks: local overrides win.
-    let remote_collapsed = update.collapsed_edit_blocks.map(|v| {
-        let mut rs = xai_grok_shell::util::config::RemoteSettings::default();
-        rs.collapsed_edit_blocks = Some(v);
-        rs
-    });
-    crate::appearance::cache::set_collapsed_edit_blocks(
-        xai_grok_shell::util::config::resolve_collapsed_edit_blocks(
-            requirements.as_ref(),
-            user_config.as_ref(),
-            managed_config.as_ref(),
-            remote_collapsed.as_ref(),
-        )
-        .value,
-    );
+    // Re-resolve dropdown tags only when the update carries the field. Some(None) =
+    // remote cleared (drop remote layer); Some(Some(map)) = set; outer None = field
+    // absent (older shell) → keep the tags resolved at startup. Env + local
+    // [slash_command_tags] always apply via resolve_slash_command_tags.
+    if let Some(remote_tags) = update.slash_command_tags.as_ref() {
+        use xai_grok_shell::util::config::resolve_slash_command_tags;
+        let effective_config = xai_grok_shell::config::load_effective_config().ok();
+        let empty_toml = toml::Value::Table(Default::default());
+        let tags_config = effective_config.as_ref().unwrap_or(&empty_toml);
+        *app.command_tags.borrow_mut() =
+            resolve_slash_command_tags(tags_config, remote_tags.as_ref());
+    }
 
-
+    tracing::info!("settings updated via x.ai/settings/update");
     true
 }
 
-/// Resolve the remote soft-default permission-mode field into the UI, used for
-/// the `/new` default and the `PermissionMode` label in the settings modal.
-///
-/// Call sites: 1) `handle_settings_update` when `permission_mode_from_soft_default`
-/// is still true (the user hasn't claimed a mode yet), and 2) `EventLoop startup`
-/// when no remote has been seen yet. Enforcement gating reuses the app's
+/// Re-arm the soft-defaulted launch mode from a pushed `permission_mode`
+/// (TOML `[ui]` > remote > Ask), for the next `/new` only — live sessions are
+/// untouched and nothing is persisted. `effective_ui` is injected so the
+/// resolve is deterministic under test. Enforcement gating reuses the app's
 /// startup snapshots (`yolo_policy_block`, `auto_mode_gate`); the agent's
 /// permission manager re-clamps authoritatively at decision time.
 pub(super) fn apply_soft_default_permission_mode(
@@ -532,6 +578,13 @@ pub(super) struct PagerSettingsUpdate {
     collapsed_edit_blocks: Option<bool>,
     #[serde(default)]
     subscription_watch_interval_secs: Option<u64>,
+    /// Tolerant for the same reason as the settings response it mirrors: a malformed gate must not
+    /// discard the tier, permission mode and campaigns that arrive with it.
+    #[serde(
+        default,
+        deserialize_with = "xai_grok_shell::util::config::deserialize_tolerant"
+    )]
+    consent_gate: Option<xai_grok_shell::util::config::ConsentGate>,
 }
 
 /// Presence-aware string: omit → `None` (`#[serde(default)]`), null →
@@ -608,6 +661,21 @@ mod presence_aware_dto_tests {
             some_v.permission_mode,
             Some(Some("always-approve".into())),
             "string must be Some(Some(_))"
+        );
+    }
+
+    #[test]
+    fn malformed_consent_gate_does_not_discard_the_rest_of_the_update() {
+        let update: PagerSettingsUpdate = serde_json::from_value(serde_json::json!({
+            "consent_gate": {"version": "not-a-number"},
+            "tips": ["still applied"],
+        }))
+        .expect("a malformed gate must not fail the whole update");
+
+        assert!(update.consent_gate.is_none());
+        assert_eq!(
+            update.tips.as_deref(),
+            Some(&["still applied".to_string()][..]),
         );
     }
 

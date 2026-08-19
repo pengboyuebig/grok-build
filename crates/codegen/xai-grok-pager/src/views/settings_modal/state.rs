@@ -54,6 +54,8 @@ pub enum SettingsKeyOutcome {
     /// Used by `d`-reset-in-picker to revert preview before opening
     /// the reset-confirm overlay.
     ActionPair(Action, Action),
+    /// Close the modal and dispatch `Action` (deep-link Esc revert or Enter commit).
+    ActionThenClose(Action),
     /// Internal state mutation, no action.
     Changed,
     /// No-op.
@@ -159,6 +161,14 @@ pub(super) enum SettingsMode {
     },
 }
 
+/// Is the open sub-pane a [`crate::settings::is_consent_chooser`] pane?
+pub(super) fn mode_is_consent_chooser(mode: &SettingsMode) -> bool {
+    matches!(
+        mode,
+        SettingsMode::PickingEnum { key, .. } if crate::settings::is_consent_chooser(key)
+    )
+}
+
 /// Settings modal state. Boxed inside `ActiveModal::Settings` to
 /// avoid clippy `large_enum_variant`.
 pub struct SettingsModalState {
@@ -204,6 +214,10 @@ pub struct SettingsModalState {
     /// `rows` in Browse, `picker_choice_rects` in PickingEnum,
     /// always `None` in EditingValue.
     pub hover_row: Option<usize>,
+    /// When true, Esc/Enter from `PickingEnum` close the modal instead of
+    /// returning to Browse. Set by deep-link open (`OpenSettingsFocus`
+    /// / `/privacy`); cleared on leave from the picker.
+    pub close_on_picker_exit: bool,
 }
 
 impl SettingsModalState {
@@ -242,6 +256,7 @@ impl SettingsModalState {
             breadcrumb_hovered: false,
             expanded_keys: std::collections::HashSet::new(),
             hover_row: None,
+            close_on_picker_exit: false,
         }
     }
 
@@ -501,6 +516,7 @@ impl SettingsModalState {
         self.hover_row = None;
         self.settings_breadcrumb_rect = None;
         self.breadcrumb_hovered = false;
+        self.close_on_picker_exit = false;
     }
 
     pub fn focus_filter(&mut self) {
@@ -821,7 +837,7 @@ pub(super) fn setting_row_visible(
 }
 
 fn build_rows(registry: &SettingsRegistry) -> Vec<RowEntry> {
-    let kitty_releases = crate::app::kitty_flags_pushed();
+    let kitty_releases = crate::app::kitty_releases_reported();
     let minimal = crate::app::minimal_mode_active();
     let voice_mode = crate::app::voice_mode_enabled();
     // Keys that belong to a group sub-sheet are rendered only inside that
@@ -889,7 +905,9 @@ pub(super) fn action_for_bool(key: SettingKey, new: bool) -> Option<Action> {
         "prompt_suggestions" => Some(Action::SetPromptSuggestions(new)),
         "respect_manual_folds" => Some(Action::SetRespectManualFolds(new)),
         "page_flip_on_send" => Some(Action::SetPageFlipOnSend(new)),
+        "confirm_before_rewind" => Some(Action::SetConfirmBeforeRewind(new)),
         "combine_queued_prompts" => Some(Action::SetCombineQueuedPrompts(new)),
+
         "invert_scroll" => Some(Action::SetInvertScroll(new)),
         "show_tips" => Some(Action::SetShowTips(new)),
         "auto_update" => Some(Action::SetAutoUpdate(new)),
@@ -967,6 +985,8 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
         "scroll_mode" => {
             crate::appearance::ScrollMode::from_canonical(choice).map(Action::SetScrollMode)
         }
+        "follow_up_behavior" => crate::appearance::FollowUpBehavior::from_canonical(choice)
+            .map(Action::SetFollowUpBehavior),
         "default_selected_permission" => {
             Some(Action::SetDefaultSelectedPermission(choice.to_string()))
         }
@@ -1097,7 +1117,7 @@ pub(super) fn effective_enum_choices<'a>(
     choices: &'a [EnumChoice],
     snapshot: &PagerLocalSnapshot,
 ) -> Vec<&'a EnumChoice> {
-    let kitty_releases = crate::app::kitty_flags_pushed();
+    let kitty_releases = crate::app::kitty_releases_reported();
     choices
         .iter()
         .filter(|c| {
