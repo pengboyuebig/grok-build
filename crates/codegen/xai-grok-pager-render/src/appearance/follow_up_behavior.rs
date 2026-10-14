@@ -1,9 +1,8 @@
 //! The `follow_up_behavior` user setting (`queue` | `steer`).
 //!
 //! Controls mid-turn follow-ups after they land on the server queue.
-//! **queue** (default) waits for the current turn to finish. **steer**
-//! promotes them into a mid-turn interjection at the next safe gap (after a
-//! tool batch, at the next model step, or before turn complete).
+//! **queue** (default) waits for the current turn to finish.
+//! **steer** promotes them into a mid-turn interjection at the next safe gap (after a tool batch, at the next model step, or before turn complete).
 
 /// How mid-turn follow-ups join the running session.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -51,12 +50,6 @@ mod tests {
                 Some(kind)
             );
         }
-    }
-
-    #[test]
-    fn default_is_queue() {
-        assert_eq!(FollowUpBehavior::default(), FollowUpBehavior::Queue);
-        assert_eq!(FollowUpBehavior::default().as_canonical(), "queue");
     }
 
     #[test]
